@@ -1,7 +1,8 @@
 global.crypto = require("crypto"); // Fix para "crypto is not defined"
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
+const axios = require("axios"); // 🔹 usado no forwardToBackend
 
 // 🔹 Firebase Storage (apenas para gerenciar sessão)
 let firebaseStorage = null;
@@ -11,18 +12,18 @@ let isFirebaseConnected = false;
 const initializeFirebaseStorage = async () => {
     try {
         if (!process.env.FIREBASE_KEY) {
-            console.log('Firebase Storage não configurado');
+            console.log("Firebase Storage não configurado");
             return;
         }
 
-        const admin = require('firebase-admin');
+        const admin = require("firebase-admin");
         const firebaseKey = JSON.parse(process.env.FIREBASE_KEY);
         const credential = admin.credential.cert(firebaseKey);
 
         if (!admin.apps.length) {
             admin.initializeApp({
                 credential,
-                storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+                storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
             });
         }
 
@@ -30,17 +31,17 @@ const initializeFirebaseStorage = async () => {
         storageBucket = firebaseStorage.bucket();
         isFirebaseConnected = true;
 
-        console.log('✅ Firebase Storage conectado');
+        console.log("✅ Firebase Storage conectado");
     } catch (error) {
-        console.error('Erro Firebase Storage:', error.message);
+        console.error("Erro Firebase Storage:", error.message);
         isFirebaseConnected = false;
     }
 };
 
 class CloudSessionManager {
     constructor() {
-        this.sessionPath = './whatsapp_session';
-        this.cloudPath = 'whatsapp-sessions/baileys-session';
+        this.sessionPath = "./whatsapp_session";
+        this.cloudPath = "whatsapp-sessions/baileys-session";
         this.backupInterval = 5 * 60 * 1000;
         this.lastBackup = 0;
     }
@@ -49,23 +50,23 @@ class CloudSessionManager {
         try {
             if (!storageBucket) return false;
 
-            console.log('⬇️ Baixando sessão do bucket...');
+            console.log("⬇️ Baixando sessão do bucket...");
 
             if (!fs.existsSync(this.sessionPath)) {
                 fs.mkdirSync(this.sessionPath, { recursive: true });
             }
 
             const [files] = await storageBucket.getFiles({
-                prefix: this.cloudPath
+                prefix: this.cloudPath,
             });
 
             if (files.length === 0) {
-                console.log('Nenhuma sessão encontrada no bucket');
+                console.log("Nenhuma sessão encontrada no bucket");
                 return false;
             }
 
             for (const file of files) {
-                const fileName = file.name.replace(`${this.cloudPath}/`, '');
+                const fileName = file.name.replace(`${this.cloudPath}/`, "");
                 const localPath = path.join(this.sessionPath, fileName);
                 await file.download({ destination: localPath });
                 console.log(`✔️ Sessão restaurada: ${fileName}`);
@@ -73,7 +74,7 @@ class CloudSessionManager {
 
             return true;
         } catch (error) {
-            console.error('Erro ao restaurar sessão:', error.message);
+            console.error("Erro ao restaurar sessão:", error.message);
             return false;
         }
     }
@@ -101,7 +102,7 @@ class CloudSessionManager {
             console.log(`⬆️ Backup da sessão: ${uploaded} arquivos enviados`);
             return true;
         } catch (error) {
-            console.error('Erro ao enviar sessão:', error.message);
+            console.error("Erro ao enviar sessão:", error.message);
             return false;
         }
     }
@@ -116,9 +117,10 @@ class CloudSessionManager {
 }
 
 const CONFIG = {
-    phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || '+5511918368812',
-    sessionPath: './whatsapp_session',
-    expressPort: process.env.PORT || 8080
+    phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || "+5511918368812",
+    sessionPath: "./whatsapp_session",
+    expressPort: process.env.PORT || 8080,
+    backendUrl: process.env.BACKEND_URL || " 'https://law-firm-backend-936902782519-936902782519.us-central1.run.app/api/v1/whatsapp/webhook", // 🔹 ajuste aqui
 };
 
 const app = express();
@@ -137,28 +139,29 @@ class BaileysWhatsAppBot {
     }
 
     setupExpressServer() {
-        app.get('/health', (req, res) => {
+        app.get("/health", (req, res) => {
             res.status(200).json({
-                status: 'healthy',
+                status: "healthy",
                 connected: this.isConnected,
                 firebase_connected: isFirebaseConnected,
                 uptime: process.uptime(),
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
             });
         });
 
-        app.get('/qr', async (req, res) => {
+        app.get("/qr", async (req, res) => {
             const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head><title>WhatsApp QR</title></head>
 <body>
     <h1>WhatsApp Bot</h1>
-    ${this.isConnected 
-        ? '<p>✅ Conectado!</p>' 
-        : qrCodeBase64 
-            ? `<img src="${qrCodeBase64}" alt="QR Code">` 
-            : '<p>Carregando QR...</p>'
+    ${
+        this.isConnected
+            ? "<p>✅ Conectado!</p>"
+            : qrCodeBase64
+            ? `<img src="${qrCodeBase64}" alt="QR Code">`
+            : "<p>Carregando QR...</p>"
     }
     <button onclick="location.reload()">Refresh</button>
 </body>
@@ -166,14 +169,14 @@ class BaileysWhatsAppBot {
             res.send(htmlContent);
         });
 
-        this.server = app.listen(CONFIG.expressPort, '0.0.0.0', () => {
+        this.server = app.listen(CONFIG.expressPort, "0.0.0.0", () => {
             console.log(`🚀 Server rodando na porta ${CONFIG.expressPort}`);
             this.initializeServices();
         });
     }
 
     async initializeServices() {
-        console.log('Inicializando serviços...');
+        console.log("Inicializando serviços...");
         await initializeFirebaseStorage();
 
         if (isFirebaseConnected) {
@@ -187,11 +190,15 @@ class BaileysWhatsAppBot {
     }
 
     async initializeBailey() {
-        console.log('Carregando Baileys...');
+        console.log("Carregando Baileys...");
         try {
-            const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
-            const { Boom } = require('@hapi/boom');
-            const QRCode = require('qrcode');
+            const {
+                default: makeWASocket,
+                DisconnectReason,
+                useMultiFileAuthState,
+            } = require("@whiskeysockets/baileys");
+            const { Boom } = require("@hapi/boom");
+            const QRCode = require("qrcode");
 
             if (!fs.existsSync(CONFIG.sessionPath)) {
                 fs.mkdirSync(CONFIG.sessionPath, { recursive: true });
@@ -204,34 +211,99 @@ class BaileysWhatsAppBot {
             this.sock = makeWASocket({
                 auth: this.authState,
                 printQRInTerminal: true,
-                browser: ['Bot', 'Chrome', '110.0.0']
+                browser: ["Bot", "Chrome", "110.0.0"],
             });
 
-            this.sock.ev.on('connection.update', async (update) => {
+            this.sock.ev.on("connection.update", async (update) => {
                 const { connection, qr } = update;
                 if (qr) {
                     qrCodeBase64 = await QRCode.toDataURL(qr);
-                    console.log('📲 QR Code gerado, escaneie no celular');
+                    console.log("📲 QR Code gerado, escaneie no celular");
                 }
-                if (connection === 'open') {
-                    console.log('✅ WhatsApp conectado');
+                if (connection === "open") {
+                    console.log("✅ WhatsApp conectado");
                     this.isConnected = true;
                     await this.sessionManager.uploadSession();
                 }
-                if (connection === 'close') {
+                if (connection === "close") {
                     this.isConnected = false;
-                    console.log('⚠️ Conexão fechada, tentando reconectar...');
+                    console.log("⚠️ Conexão fechada, tentando reconectar...");
                     setTimeout(() => this.initializeBailey(), 5000);
                 }
             });
 
-            this.sock.ev.on('creds.update', this.saveCreds);
+            this.sock.ev.on("creds.update", this.saveCreds);
+
+            // 🔹 Captura mensagens recebidas
+            this.sock.ev.on("messages.upsert", async (m) => {
+                try {
+                    const msg = m.messages[0];
+                    if (!msg.key.fromMe && m.type === "notify") {
+                        const messageText =
+                            msg.message?.conversation ||
+                            msg.message?.extendedTextMessage?.text ||
+                            null;
+
+                        if (messageText) {
+                            console.log("📩 Nova mensagem recebida:", messageText);
+
+                            await this.forwardToBackend(
+                                msg.key.remoteJid,
+                                messageText,
+                                msg.key.id
+                            );
+                        }
+                    }
+                } catch (error) {
+                    console.error("Erro processar mensagem:", error);
+                }
+            });
         } catch (error) {
-            console.error('Erro Baileys:', error.message);
+            console.error("Erro Baileys:", error.message);
             setTimeout(() => this.initializeBailey(), 10000);
+        }
+    }
+
+    // 🔹 Encaminhar mensagens para backend
+    async forwardToBackend(remoteJid, messageText, messageId) {
+        try {
+            const payload = {
+                phone_number: remoteJid.split("@")[0], // número limpo
+                message: messageText,
+                message_id: messageId,
+            };
+
+            console.log("📡 Enviando mensagem para backend:", payload);
+
+            const response = await axios.post(CONFIG.backendUrl, payload);
+
+            if (response.data && response.data.reply) {
+                const reply = response.data.reply;
+                console.log("🤖 Resposta do backend:", reply);
+
+                await this.sendMessage(remoteJid, reply);
+            } else {
+                console.log("ℹ️ Backend não retornou resposta automática.");
+            }
+        } catch (error) {
+            console.error("❌ Erro no forwardToBackend:", error.message);
+        }
+    }
+
+    async sendMessage(to, message) {
+        if (!this.isConnected || !this.sock) {
+            throw new Error("WhatsApp not connected");
+        }
+
+        try {
+            const result = await this.sock.sendMessage(to, { text: message });
+            return result.key.id;
+        } catch (error) {
+            console.error("Erro enviar:", error);
+            throw error;
         }
     }
 }
 
-console.log('🚀 Iniciando WhatsApp Bot...');
+console.log("🚀 Iniciando WhatsApp Bot...");
 new BaileysWhatsAppBot();
