@@ -271,7 +271,6 @@ class BaileysWhatsAppBot {
                 phone_number: remoteJid.split("@")[0], // número limpo
                 message: messageText,
                 message_id: messageId,
-                platform: "whatsapp",
             };
 
             console.log("📡 Enviando mensagem para backend:", payload);
