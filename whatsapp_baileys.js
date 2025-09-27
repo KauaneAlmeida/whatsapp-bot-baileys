@@ -1,4 +1,4 @@
-global.crypto = require("crypto");
+global.crypto = require("crypto"); // 🔹 Fix do erro "crypto is not defined"
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -8,10 +8,6 @@ const path = require('path');
 // let firebaseStorage = null;
 // let storageBucket = null;
 // let isFirebaseConnected = false;
-
-// const initializeFirebase = async () => { ... }
-// const saveMessageToFirebase = async (...) => { ... }
-// const getUserDataFromFirebase = async (...) => { ... }
 
 class MessageRateLimit {
     constructor() {
@@ -54,7 +50,6 @@ class BaileysWhatsAppBot {
         this.saveCreds = null;
         this.server = null;
         this.rateLimit = new MessageRateLimit();
-        // this.sessionManager = new CloudSessionManager(); // 🔹 desativado
         this.setupExpressServer();
     }
 
@@ -63,7 +58,6 @@ class BaileysWhatsAppBot {
             res.status(200).json({
                 status: 'healthy',
                 connected: this.isConnected,
-                // firebase_connected: isFirebaseConnected, // 🔹 desativado
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString()
             });
@@ -73,8 +67,7 @@ class BaileysWhatsAppBot {
             res.json({
                 service: 'WhatsApp Baileys Bot',
                 status: 'running',
-                connected: this.isConnected,
-                // firebase_connected: isFirebaseConnected // 🔹 desativado
+                connected: this.isConnected
             });
         });
 
@@ -114,8 +107,6 @@ class BaileysWhatsAppBot {
                 }
                 
                 const messageId = await this.sendMessage(to, message);
-                // await saveMessageToFirebase(to, message, 'sent'); // 🔹 desativado
-                
                 res.json({ success: true, messageId });
             } catch (error) {
                 res.status(500).json({ error: error.message });
@@ -130,14 +121,6 @@ class BaileysWhatsAppBot {
 
     async initializeServices() {
         console.log('Inicializando serviços...');
-
-        // 🔹 Firebase e sessão desativados
-        // await initializeFirebase();
-        // if (isFirebaseConnected) {
-        //     this.sessionManager.startAutoBackup();
-        //     await this.sessionManager.downloadSession();
-        // }
-
         setTimeout(async () => {
             await this.initializeBailey();
         }, 2000);
@@ -222,11 +205,6 @@ class BaileysWhatsAppBot {
                 console.log('WhatsApp conectado!');
                 this.isConnected = true;
                 qrCodeBase64 = null;
-                
-                // 🔹 backup desativado
-                // setTimeout(async () => {
-                //     await this.sessionManager.uploadSession();
-                // }, 5000);
             }
         });
 
@@ -238,15 +216,20 @@ class BaileysWhatsAppBot {
             }
         });
 
+        // 🔹 Aqui entra a resposta automática (Opção 1)
         this.sock.ev.on('messages.upsert', async (m) => {
             try {
                 const msg = m.messages[0];
                 if (!msg.key.fromMe && m.type === 'notify') {
                     const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || null;
                     if (messageText) {
-                        console.log('Nova mensagem:', messageText.substring(0, 50));
-                        // await saveMessageToFirebase(msg.key.remoteJid, messageText, 'received'); // 🔹 desativado
-                        // await this.forwardToBackend(msg.key.remoteJid, messageText, msg.key.id); // 🔹 desativado
+                        console.log('Nova mensagem recebida:', messageText.substring(0, 50));
+
+                        // ✅ Resposta automática simples
+                        await this.sendMessage(
+                            msg.key.remoteJid, 
+                            "✅ Recebi sua mensagem: " + messageText
+                        );
                     }
                 }
             } catch (error) {
@@ -254,9 +237,6 @@ class BaileysWhatsAppBot {
             }
         });
     }
-
-    // 🔹 forwardToBackend desativado
-    // async forwardToBackend(...) { ... }
 
     async sendMessage(to, message) {
         if (!this.isConnected || !this.sock) {
