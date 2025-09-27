@@ -3,6 +3,8 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 
 // 🔹 Firebase Storage (apenas para gerenciar sessão)
 let firebaseStorage = null;
@@ -112,10 +114,16 @@ class CloudSessionManager {
             }
         }, this.backupInterval);
     }
+
+    clearLocalSession() {
+        if (fs.existsSync(this.sessionPath)) {
+            fs.rmSync(this.sessionPath, { recursive: true, force: true });
+            console.log("🧹 Sessão local removida");
+        }
+    }
 }
 
 const CONFIG = {
-    phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || "+5511918368812",
     sessionPath: "./whatsapp_session",
     expressPort: process.env.PORT || 8081,
     backendUrl:
@@ -169,12 +177,9 @@ class BaileysWhatsAppBot {
             res.send(htmlContent);
         });
 
-        // 🔹 Novo endpoint: backend chama aqui para enviar mensagens pelo bot
         app.post("/send-message", async (req, res) => {
             try {
                 const { phone_number, message } = req.body;
-
-                console.log("📨 Backend solicitou envio:", { phone_number, message });
 
                 if (!phone_number || !message) {
                     return res.status(400).json({
@@ -196,15 +201,12 @@ class BaileysWhatsAppBot {
 
                 const messageId = await this.sendMessage(whatsappJid, message);
 
-                console.log("✅ Mensagem enviada via backend:", messageId);
-
                 res.json({
                     success: true,
                     message_id: messageId,
                     phone_number,
                 });
             } catch (error) {
-                console.error("❌ Erro no endpoint /send-message:", error.message);
                 res.status(500).json({
                     success: false,
                     error: error.message,
@@ -241,7 +243,6 @@ class BaileysWhatsAppBot {
                 useMultiFileAuthState,
             } = require("@whiskeysockets/baileys");
             const { Boom } = require("@hapi/boom");
-            const QRCode = require("qrcode");
 
             if (!fs.existsSync(CONFIG.sessionPath)) {
                 fs.mkdirSync(CONFIG.sessionPath, { recursive: true });
@@ -253,15 +254,18 @@ class BaileysWhatsAppBot {
 
             this.sock = makeWASocket({
                 auth: this.authState,
-                printQRInTerminal: true,
+                printQRInTerminal: false, // desativado para não bugar
                 browser: ["Bot", "Chrome", "110.0.0"],
             });
 
             this.sock.ev.on("connection.update", async (update) => {
                 const { connection, qr } = update;
                 if (qr) {
+                    // QR no terminal
+                    qrcode.generate(qr, { small: true });
+                    // QR no navegador
                     qrCodeBase64 = await QRCode.toDataURL(qr);
-                    console.log("📲 QR Code gerado, escaneie no celular");
+                    console.log("📲 Novo QR Code gerado, escaneie no celular!");
                 }
                 if (connection === "open") {
                     console.log("✅ WhatsApp conectado");
@@ -270,14 +274,14 @@ class BaileysWhatsAppBot {
                 }
                 if (connection === "close") {
                     this.isConnected = false;
-                    console.log("⚠️ Conexão fechada, tentando reconectar...");
+                    console.log("⚠️ Conexão fechada, limpando sessão e tentando reconectar...");
+                    this.sessionManager.clearLocalSession();
                     setTimeout(() => this.initializeBailey(), 5000);
                 }
             });
 
             this.sock.ev.on("creds.update", this.saveCreds);
 
-            // 🔹 Captura mensagens recebidas
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
@@ -289,7 +293,6 @@ class BaileysWhatsAppBot {
 
                         if (messageText) {
                             console.log("📩 Nova mensagem recebida:", messageText);
-
                             await this.forwardToBackend(
                                 msg.key.remoteJid,
                                 messageText,
@@ -307,26 +310,19 @@ class BaileysWhatsAppBot {
         }
     }
 
-    // 🔹 Encaminhar mensagens para backend
     async forwardToBackend(remoteJid, messageText, messageId) {
         try {
             const payload = {
-                phone_number: remoteJid.split("@")[0], // número limpo
+                phone_number: remoteJid.split("@")[0],
                 message: messageText,
                 message_id: messageId,
             };
-
-            console.log("📡 Enviando mensagem para backend:", payload);
 
             const response = await axios.post(CONFIG.backendUrl, payload);
 
             if (response.data && response.data.response) {
                 const reply = response.data.response;
-                console.log("🤖 Resposta do backend:", reply);
-
                 await this.sendMessage(remoteJid, reply);
-            } else {
-                console.log("ℹ️ Backend não retornou resposta automática.");
             }
         } catch (error) {
             console.error("❌ Erro no forwardToBackend:", error.message);
@@ -349,5 +345,4 @@ class BaileysWhatsAppBot {
 }
 
 console.log("🚀 Iniciando WhatsApp Bot...");
-const botInstance = new BaileysWhatsAppBot();
-console.log("🚀 Iniciando WhatsApp Bot...");
+new BaileysWhatsAppBot();
