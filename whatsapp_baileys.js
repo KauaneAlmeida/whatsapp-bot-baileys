@@ -2,88 +2,15 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
-let firebaseDb = null;
-let firebaseStorage = null;
-let storageBucket = null;
-let isFirebaseConnected = false;
+// 🔹 Firebase desativado por enquanto
+// let firebaseDb = null;
+// let firebaseStorage = null;
+// let storageBucket = null;
+// let isFirebaseConnected = false;
 
-const initializeFirebase = async () => {
-    try {
-        if (!process.env.FIREBASE_KEY) {
-            console.log('Firebase não configurado');
-            return;
-        }
-
-        const admin = require('firebase-admin');
-        const firebaseKey = JSON.parse(process.env.FIREBASE_KEY);
-        const credential = admin.credential.cert(firebaseKey);
-        
-        if (!admin.apps.length) {
-            admin.initializeApp({ 
-                credential,
-                storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'whatsapp-sessions-exalted-kayak-472517-s4-1758254195'
-            });
-        }
-        
-        firebaseDb = admin.firestore();
-        firebaseStorage = admin.storage();
-        storageBucket = firebaseStorage.bucket();
-        
-        await firebaseDb.collection('_health_check').doc('whatsapp_bot').set({
-            timestamp: new Date(),
-            service: 'whatsapp_baileys_bot',
-            status: 'initialized'
-        });
-        
-        isFirebaseConnected = true;
-        console.log('Firebase conectado');
-        
-    } catch (error) {
-        console.error('Erro Firebase:', error.message);
-        isFirebaseConnected = false;
-    }
-};
-
-const saveMessageToFirebase = async (from, message, direction = 'received') => {
-    try {
-        if (!firebaseDb) return;
-        
-        await firebaseDb.collection('whatsapp_messages').add({
-            from: from,
-            message: message,
-            direction: direction,
-            timestamp: new Date(),
-            bot_service: 'baileys',
-            phone_clean: from.replace('@s.whatsapp.net', '')
-        });
-        
-        console.log(`Mensagem ${direction} salva`);
-    } catch (error) {
-        console.error('Erro ao salvar mensagem:', error);
-    }
-};
-
-const getUserDataFromFirebase = async (phoneNumber) => {
-    try {
-        if (!firebaseDb) return null;
-        
-        const cleanPhone = phoneNumber.replace('@s.whatsapp.net', '');
-        
-        const leadsSnapshot = await firebaseDb.collection('leads')
-            .where('phone', '==', cleanPhone)
-            .limit(1)
-            .get();
-            
-        if (!leadsSnapshot.empty) {
-            return leadsSnapshot.docs[0].data();
-        }
-        
-        return null;
-    } catch (error) {
-        console.error('Erro ao buscar dados:', error);
-        return null;
-    }
-};
+// const initializeFirebase = async () => { ... }
+// const saveMessageToFirebase = async (...) => { ... }
+// const getUserDataFromFirebase = async (...) => { ... }
 
 class MessageRateLimit {
     constructor() {
@@ -104,129 +31,8 @@ class MessageRateLimit {
     }
 }
 
-class CloudSessionManager {
-    constructor() {
-        this.sessionPath = './whatsapp_session';
-        this.cloudPath = 'whatsapp-sessions/baileys-session';
-        this.backupInterval = 5 * 60 * 1000;
-        this.lastBackup = 0;
-    }
-
-    async downloadSession() {
-        try {
-            if (!storageBucket) {
-                console.log('Storage não disponível');
-                return false;
-            }
-
-            console.log('Baixando sessão...');
-            
-            if (!fs.existsSync(this.sessionPath)) {
-                fs.mkdirSync(this.sessionPath, { recursive: true });
-            }
-
-            const [files] = await storageBucket.getFiles({
-                prefix: this.cloudPath
-            });
-
-            if (files.length === 0) {
-                console.log('Nenhuma sessão no cloud');
-                return false;
-            }
-
-            for (const file of files) {
-                const fileName = file.name.replace(`${this.cloudPath}/`, '');
-                const localPath = path.join(this.sessionPath, fileName);
-                
-                try {
-                    await file.download({ destination: localPath });
-                    console.log(`Baixado: ${fileName}`);
-                } catch (downloadError) {
-                    console.error(`Erro ao baixar ${fileName}:`, downloadError.message);
-                }
-            }
-
-            console.log('Sessão restaurada');
-            return true;
-
-        } catch (error) {
-            console.error('Erro ao baixar sessão:', error.message);
-            return false;
-        }
-    }
-
-    async uploadSession() {
-        try {
-            if (!storageBucket) return false;
-
-            const now = Date.now();
-            if (now - this.lastBackup < this.backupInterval) return false;
-
-            if (!fs.existsSync(this.sessionPath)) return false;
-
-            const files = fs.readdirSync(this.sessionPath);
-            let uploadedFiles = 0;
-
-            for (const fileName of files) {
-                const localPath = path.join(this.sessionPath, fileName);
-                const cloudPath = `${this.cloudPath}/${fileName}`;
-
-                try {
-                    const stats = fs.statSync(localPath);
-                    if (stats.isFile()) {
-                        await storageBucket.upload(localPath, {
-                            destination: cloudPath,
-                            metadata: {
-                                contentType: 'application/octet-stream'
-                            }
-                        });
-                        uploadedFiles++;
-                    }
-                } catch (uploadError) {
-                    console.error(`Erro upload ${fileName}:`, uploadError.message);
-                }
-            }
-
-            this.lastBackup = now;
-            console.log(`Backup: ${uploadedFiles} arquivos`);
-            return true;
-
-        } catch (error) {
-            console.error('Erro backup:', error.message);
-            return false;
-        }
-    }
-
-    startAutoBackup() {
-        setInterval(async () => {
-            if (isFirebaseConnected) {
-                await this.uploadSession();
-            }
-        }, this.backupInterval);
-    }
-
-    async clearSession() {
-        try {
-            if (fs.existsSync(this.sessionPath)) {
-                fs.rmSync(this.sessionPath, { recursive: true, force: true });
-            }
-
-            if (storageBucket) {
-                const [files] = await storageBucket.getFiles({
-                    prefix: this.cloudPath
-                });
-
-                for (const file of files) {
-                    await file.delete();
-                }
-            }
-
-            console.log('Sessão limpa');
-        } catch (error) {
-            console.error('Erro limpar sessão:', error);
-        }
-    }
-}
+// 🔹 CloudSessionManager desativado por enquanto
+// class CloudSessionManager { ... }
 
 const CONFIG = {
     phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || '+5511918368812',
@@ -247,7 +53,7 @@ class BaileysWhatsAppBot {
         this.saveCreds = null;
         this.server = null;
         this.rateLimit = new MessageRateLimit();
-        this.sessionManager = new CloudSessionManager();
+        // this.sessionManager = new CloudSessionManager(); // 🔹 desativado
         this.setupExpressServer();
     }
 
@@ -256,7 +62,7 @@ class BaileysWhatsAppBot {
             res.status(200).json({
                 status: 'healthy',
                 connected: this.isConnected,
-                firebase_connected: isFirebaseConnected,
+                // firebase_connected: isFirebaseConnected, // 🔹 desativado
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString()
             });
@@ -267,7 +73,7 @@ class BaileysWhatsAppBot {
                 service: 'WhatsApp Baileys Bot',
                 status: 'running',
                 connected: this.isConnected,
-                firebase_connected: isFirebaseConnected
+                // firebase_connected: isFirebaseConnected // 🔹 desativado
             });
         });
 
@@ -307,7 +113,7 @@ class BaileysWhatsAppBot {
                 }
                 
                 const messageId = await this.sendMessage(to, message);
-                await saveMessageToFirebase(to, message, 'sent');
+                // await saveMessageToFirebase(to, message, 'sent'); // 🔹 desativado
                 
                 res.json({ success: true, messageId });
             } catch (error) {
@@ -323,14 +129,14 @@ class BaileysWhatsAppBot {
 
     async initializeServices() {
         console.log('Inicializando serviços...');
-        
-        await initializeFirebase();
-        
-        if (isFirebaseConnected) {
-            this.sessionManager.startAutoBackup();
-            await this.sessionManager.downloadSession();
-        }
-        
+
+        // 🔹 Firebase e sessão desativados
+        // await initializeFirebase();
+        // if (isFirebaseConnected) {
+        //     this.sessionManager.startAutoBackup();
+        //     await this.sessionManager.downloadSession();
+        // }
+
         setTimeout(async () => {
             await this.initializeBailey();
         }, 2000);
@@ -416,9 +222,10 @@ class BaileysWhatsAppBot {
                 this.isConnected = true;
                 qrCodeBase64 = null;
                 
-                setTimeout(async () => {
-                    await this.sessionManager.uploadSession();
-                }, 5000);
+                // 🔹 backup desativado
+                // setTimeout(async () => {
+                //     await this.sessionManager.uploadSession();
+                // }, 5000);
             }
         });
 
@@ -437,8 +244,8 @@ class BaileysWhatsAppBot {
                     const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || null;
                     if (messageText) {
                         console.log('Nova mensagem:', messageText.substring(0, 50));
-                        await saveMessageToFirebase(msg.key.remoteJid, messageText, 'received');
-                        await this.forwardToBackend(msg.key.remoteJid, messageText, msg.key.id);
+                        // await saveMessageToFirebase(msg.key.remoteJid, messageText, 'received'); // 🔹 desativado
+                        // await this.forwardToBackend(msg.key.remoteJid, messageText, msg.key.id); // 🔹 desativado
                     }
                 }
             } catch (error) {
@@ -447,50 +254,8 @@ class BaileysWhatsAppBot {
         });
     }
 
-    async forwardToBackend(from, message, messageId) {
-        try {
-            const webhookUrl = process.env.FASTAPI_WEBHOOK_URL || 'https://law-firm-backend-936902782519-936902782519.us-central1.run.app/api/v1/whatsapp/webhook';
-            
-            const payload = { 
-                from, 
-                message, 
-                messageId, 
-                timestamp: new Date().toISOString(),
-                platform: 'whatsapp'
-            };
-
-            const fetch = globalThis.fetch || require('node-fetch');
-            
-            const response = await fetch(webhookUrl, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            });
-            
-            if (response.ok) {
-                const responseText = await response.text();
-                
-                let responseData = null;
-                try {
-                    responseData = JSON.parse(responseText);
-                } catch (parseError) {
-                    console.error('Erro parse JSON:', parseError);
-                    return;
-                }
-                
-                if (responseData && responseData.response && responseData.response.trim() !== '') {
-                    await this.sendMessage(from, responseData.response);
-                    await saveMessageToFirebase(from, responseData.response, 'sent');
-                }
-            } else {
-                console.error('Erro HTTP:', response.status);
-            }
-        } catch (error) {
-            console.error('Erro backend:', error.message);
-        }
-    }
+    // 🔹 forwardToBackend desativado
+    // async forwardToBackend(...) { ... }
 
     async sendMessage(to, message) {
         if (!this.isConnected || !this.sock) {
