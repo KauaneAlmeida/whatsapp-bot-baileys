@@ -9,7 +9,7 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PORT: 8080
+        PORT: 8081     // <== ajustando trocando a port
       },
       error_file: '/dev/stderr',
       out_file: '/dev/stdout',
