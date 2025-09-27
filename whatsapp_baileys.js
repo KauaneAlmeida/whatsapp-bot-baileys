@@ -2,7 +2,7 @@ global.crypto = require("crypto"); // Fix para "crypto is not defined"
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const axios = require("axios"); // 🔹 usado no forwardToBackend
+const axios = require("axios");
 
 // 🔹 Firebase Storage (apenas para gerenciar sessão)
 let firebaseStorage = null;
@@ -56,9 +56,7 @@ class CloudSessionManager {
                 fs.mkdirSync(this.sessionPath, { recursive: true });
             }
 
-            const [files] = await storageBucket.getFiles({
-                prefix: this.cloudPath,
-            });
+            const [files] = await storageBucket.getFiles({ prefix: this.cloudPath });
 
             if (files.length === 0) {
                 console.log("Nenhuma sessão encontrada no bucket");
@@ -120,7 +118,9 @@ const CONFIG = {
     phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || "+5511918368812",
     sessionPath: "./whatsapp_session",
     expressPort: process.env.PORT || 8080,
-    backendUrl: process.env.BACKEND_URL || " 'https://law-firm-backend-936902782519-936902782519.us-central1.run.app/api/v1/whatsapp/webhook", // 🔹 ajuste aqui
+    backendUrl:
+        process.env.BACKEND_URL ||
+        "https://law-firm-backend-936902782519-936902782519.us-central1.run.app/api/v1/whatsapp/webhook",
 };
 
 const app = express();
@@ -271,14 +271,15 @@ class BaileysWhatsAppBot {
                 phone_number: remoteJid.split("@")[0], // número limpo
                 message: messageText,
                 message_id: messageId,
+                platform: "whatsapp",
             };
 
             console.log("📡 Enviando mensagem para backend:", payload);
 
             const response = await axios.post(CONFIG.backendUrl, payload);
 
-            if (response.data && response.data.reply) {
-                const reply = response.data.reply;
+            if (response.data && response.data.response) {
+                const reply = response.data.response;
                 console.log("🤖 Resposta do backend:", reply);
 
                 await this.sendMessage(remoteJid, reply);
