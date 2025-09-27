@@ -169,6 +169,49 @@ class BaileysWhatsAppBot {
             res.send(htmlContent);
         });
 
+        // 🔹 Novo endpoint: backend chama aqui para enviar mensagens pelo bot
+        app.post("/send-message", async (req, res) => {
+            try {
+                const { phone_number, message } = req.body;
+
+                console.log("📨 Backend solicitou envio:", { phone_number, message });
+
+                if (!phone_number || !message) {
+                    return res.status(400).json({
+                        success: false,
+                        error: "phone_number e message são obrigatórios",
+                    });
+                }
+
+                if (!this.isConnected) {
+                    return res.status(503).json({
+                        success: false,
+                        error: "WhatsApp não conectado",
+                    });
+                }
+
+                const whatsappJid = phone_number.includes("@")
+                    ? phone_number
+                    : `${phone_number}@s.whatsapp.net`;
+
+                const messageId = await this.sendMessage(whatsappJid, message);
+
+                console.log("✅ Mensagem enviada via backend:", messageId);
+
+                res.json({
+                    success: true,
+                    message_id: messageId,
+                    phone_number,
+                });
+            } catch (error) {
+                console.error("❌ Erro no endpoint /send-message:", error.message);
+                res.status(500).json({
+                    success: false,
+                    error: error.message,
+                });
+            }
+        });
+
         this.server = app.listen(CONFIG.expressPort, "0.0.0.0", () => {
             console.log(`🚀 Server rodando na porta ${CONFIG.expressPort}`);
             this.initializeServices();
@@ -306,4 +349,5 @@ class BaileysWhatsAppBot {
 }
 
 console.log("🚀 Iniciando WhatsApp Bot...");
-new BaileysWhatsAppBot();
+const botInstance = new BaileysWhatsAppBot();
+console.log("🚀 Iniciando WhatsApp Bot...");
