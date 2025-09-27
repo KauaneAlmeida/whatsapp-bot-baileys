@@ -117,7 +117,7 @@ class CloudSessionManager {
 const CONFIG = {
     phoneNumber: process.env.WHATSAPP_PHONE_NUMBER || "+5511918368812",
     sessionPath: "./whatsapp_session",
-    expressPort: process.env.PORT || 8080,
+    expressPort: process.env.PORT || 8081,
     backendUrl:
         process.env.BACKEND_URL ||
         "https://law-firm-backend-936902782519-936902782519.us-central1.run.app/api/v1/whatsapp/webhook",
