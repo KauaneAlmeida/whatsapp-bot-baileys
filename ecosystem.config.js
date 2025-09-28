@@ -2,14 +2,14 @@ module.exports = {
   apps: [
     {
       name: 'whatsapp-bot',
-      script: 'index.js',           // <== trocado
+      script: 'whatsapp_baileys.js',
       instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PORT: 8081     // <== ajustando trocando a port
+        PORT: 8081
       },
       error_file: '/dev/stderr',
       out_file: '/dev/stdout',
