@@ -1,7 +1,3 @@
-/// REMOVER esta linha que pode estar causando conflito
-// global.crypto = require("crypto");
-
-// Imports usando ES modules
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -9,20 +5,27 @@ import axios from "axios";
 import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 
-// Importar Baileys e dependências
+// Variáveis globais para módulos
 let makeWASocket, DisconnectReason, useMultiFileAuthState, Boom;
 let firebaseAdmin = null;
 
 const loadModules = async () => {
     try {
-        // Carregar Baileys
+        // Carregar Baileys com estrutura corrigida
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
         
-        makeWASocket = baileys.default;
+        // Correção: tentar múltiplas formas de acessar makeWASocket
+        makeWASocket = baileys.makeWASocket || baileys.default?.makeWASocket || baileys.default;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
+        
+        // Verificar se conseguiu carregar makeWASocket
+        if (typeof makeWASocket !== 'function') {
+            console.error("makeWASocket não é uma função. Estrutura do Baileys:", Object.keys(baileys));
+            return false;
+        }
         
         // Carregar Firebase Admin se necessário
         if (process.env.FIREBASE_KEY) {
@@ -248,6 +251,7 @@ class BaileysWhatsAppBot {
                 
                 res.json({ success: true, message: "Sessão resetada" });
             } catch (error) {
+                console.error("Reset session error:", error);
                 res.status(500).json({ success: false, error: error.message });
             }
         });
@@ -301,7 +305,7 @@ class BaileysWhatsAppBot {
         // Primeiro carregar todos os módulos
         console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
-        this.baileysLoaded = this.modulesLoaded; // Baileys é parte dos módulos
+        this.baileysLoaded = this.modulesLoaded;
         
         if (!this.modulesLoaded) {
             console.error("❌ Falha ao carregar módulos - abortando inicialização");
@@ -350,7 +354,6 @@ class BaileysWhatsAppBot {
                 qrTimeout: 40000,
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 60000,
-                // Adicionar configurações de retry
                 retryRequestDelayMs: 250,
                 maxMsgRetryCount: 5,
                 markOnlineOnConnect: true,
