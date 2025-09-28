@@ -1,10 +1,41 @@
-global.crypto = require("crypto");
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
-const axios = require("axios");
-const qrcode = require("qrcode-terminal");
-const QRCode = require("qrcode");
+/// REMOVER esta linha que pode estar causando conflito
+// global.crypto = require("crypto");
+
+// Imports usando ES modules
+import express from "express";
+import fs from "fs";
+import path from "path";
+import axios from "axios";
+import qrcode from "qrcode-terminal";
+import QRCode from "qrcode";
+
+// Importar Baileys e dependências
+let makeWASocket, DisconnectReason, useMultiFileAuthState, Boom;
+let firebaseAdmin = null;
+
+const loadModules = async () => {
+    try {
+        // Carregar Baileys
+        const baileys = await import("@whiskeysockets/baileys");
+        const boom = await import("@hapi/boom");
+        
+        makeWASocket = baileys.default;
+        DisconnectReason = baileys.DisconnectReason;
+        useMultiFileAuthState = baileys.useMultiFileAuthState;
+        Boom = boom.Boom;
+        
+        // Carregar Firebase Admin se necessário
+        if (process.env.FIREBASE_KEY) {
+            firebaseAdmin = await import("firebase-admin");
+        }
+        
+        console.log("✅ Módulos carregados com sucesso");
+        return true;
+    } catch (error) {
+        console.error("❌ Erro ao carregar módulos:", error);
+        return false;
+    }
+};
 
 // Firebase Storage
 let firebaseStorage = null;
@@ -18,18 +49,22 @@ const initializeFirebaseStorage = async () => {
             return;
         }
 
-        const admin = require("firebase-admin");
-        const firebaseKey = JSON.parse(process.env.FIREBASE_KEY);
-        const credential = admin.credential.cert(firebaseKey);
+        if (!firebaseAdmin) {
+            console.error("Firebase Admin não foi carregado");
+            return;
+        }
 
-        if (!admin.apps.length) {
-            admin.initializeApp({
+        const firebaseKey = JSON.parse(process.env.FIREBASE_KEY);
+        const credential = firebaseAdmin.default.credential.cert(firebaseKey);
+
+        if (!firebaseAdmin.default.apps.length) {
+            firebaseAdmin.default.initializeApp({
                 credential,
                 storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
             });
         }
 
-        firebaseStorage = admin.storage();
+        firebaseStorage = firebaseAdmin.default.storage();
         storageBucket = firebaseStorage.bucket();
         isFirebaseConnected = true;
 
@@ -139,13 +174,15 @@ class BaileysWhatsAppBot {
     constructor() {
         this.sock = null;
         this.isConnected = false;
-        this.isConnecting = false; // NOVO: evitar múltiplas conexões
+        this.isConnecting = false;
         this.authState = null;
         this.saveCreds = null;
         this.server = null;
         this.sessionManager = new CloudSessionManager();
-        this.qrAttempts = 0; // NOVO: controlar tentativas de QR
-        this.maxQRAttempts = 3; // NOVO: limite de tentativas
+        this.qrAttempts = 0;
+        this.maxQRAttempts = 3;
+        this.baileysLoaded = false;
+        this.modulesLoaded = false;
         this.setupExpressServer();
     }
 
@@ -156,6 +193,8 @@ class BaileysWhatsAppBot {
                 connected: this.isConnected,
                 connecting: this.isConnecting,
                 firebase_connected: isFirebaseConnected,
+                baileys_loaded: this.baileysLoaded,
+                modules_loaded: this.modulesLoaded,
                 qr_attempts: this.qrAttempts,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString(),
@@ -173,6 +212,8 @@ class BaileysWhatsAppBot {
 <body>
     <h1>WhatsApp Bot</h1>
     <p>Status: ${this.isConnected ? 'Conectado' : this.isConnecting ? 'Conectando...' : 'Desconectado'}</p>
+    <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
+    <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
     <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
     ${
         this.isConnected
@@ -188,7 +229,6 @@ class BaileysWhatsAppBot {
             res.send(htmlContent);
         });
 
-        // NOVO: endpoint para resetar sessão
         app.post("/reset-session", async (req, res) => {
             try {
                 console.log("🔄 Resetando sessão...");
@@ -199,6 +239,7 @@ class BaileysWhatsAppBot {
                 
                 if (this.sock) {
                     this.sock.end();
+                    this.sock = null;
                 }
                 
                 setTimeout(() => {
@@ -256,6 +297,17 @@ class BaileysWhatsAppBot {
 
     async initializeServices() {
         console.log("Inicializando serviços...");
+        
+        // Primeiro carregar todos os módulos
+        console.log("📦 Carregando módulos...");
+        this.modulesLoaded = await loadModules();
+        this.baileysLoaded = this.modulesLoaded; // Baileys é parte dos módulos
+        
+        if (!this.modulesLoaded) {
+            console.error("❌ Falha ao carregar módulos - abortando inicialização");
+            return;
+        }
+
         await initializeFirebaseStorage();
 
         if (isFirebaseConnected) {
@@ -269,23 +321,20 @@ class BaileysWhatsAppBot {
     }
 
     async initializeBailey() {
-        // CORREÇÃO: evitar múltiplas inicializações simultâneas
         if (this.isConnecting) {
             console.log("⚠️ Já está conectando, ignorando nova tentativa");
             return;
         }
 
+        if (!this.baileysLoaded) {
+            console.error("❌ Baileys não foi carregado - não é possível inicializar");
+            return;
+        }
+
         this.isConnecting = true;
-        console.log("Carregando Baileys...");
+        console.log("🔗 Inicializando conexão WhatsApp...");
         
         try {
-            const {
-                default: makeWASocket,
-                DisconnectReason,
-                useMultiFileAuthState,
-            } = require("@whiskeysockets/baileys");
-            const { Boom } = require("@hapi/boom");
-
             if (!fs.existsSync(CONFIG.sessionPath)) {
                 fs.mkdirSync(CONFIG.sessionPath, { recursive: true });
             }
@@ -298,10 +347,13 @@ class BaileysWhatsAppBot {
                 auth: this.authState,
                 printQRInTerminal: false,
                 browser: ["Bot", "Chrome", "110.0.0"],
-                // NOVO: configurações para estabilizar QR
-                qrTimeout: 40000, // 40 segundos por QR
+                qrTimeout: 40000,
                 connectTimeoutMs: 60000,
                 defaultQueryTimeoutMs: 60000,
+                // Adicionar configurações de retry
+                retryRequestDelayMs: 250,
+                maxMsgRetryCount: 5,
+                markOnlineOnConnect: true,
             });
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -311,7 +363,6 @@ class BaileysWhatsAppBot {
                     this.qrAttempts++;
                     console.log(`📱 QR Code ${this.qrAttempts}/${this.maxQRAttempts} gerado`);
                     
-                    // Só gerar QR se não excedeu limite
                     if (this.qrAttempts <= this.maxQRAttempts) {
                         qrcode.generate(qr, { small: true });
                         qrCodeBase64 = await QRCode.toDataURL(qr);
@@ -327,7 +378,7 @@ class BaileysWhatsAppBot {
                     console.log("✅ WhatsApp conectado com sucesso!");
                     this.isConnected = true;
                     this.isConnecting = false;
-                    this.qrAttempts = 0; // RESET contador
+                    this.qrAttempts = 0;
                     qrCodeBase64 = null;
                     await this.sessionManager.uploadSession();
                 }
@@ -381,7 +432,7 @@ class BaileysWhatsAppBot {
                 }
             });
         } catch (error) {
-            console.error("Erro Baileys:", error.message);
+            console.error("❌ Erro Baileys:", error.message);
             this.isConnecting = false;
             setTimeout(() => this.initializeBailey(), 15000);
         }
@@ -397,7 +448,11 @@ class BaileysWhatsAppBot {
 
             console.log("🔗 Enviando para backend:", payload.phone_number);
             const response = await axios.post(CONFIG.backendUrl, payload, {
-                timeout: 30000
+                timeout: 30000,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'WhatsApp-Bot/1.0'
+                }
             });
 
             if (response.data && response.data.response) {
@@ -407,6 +462,9 @@ class BaileysWhatsAppBot {
             }
         } catch (error) {
             console.error("❌ Erro no backend:", error.message);
+            if (error.code === 'ECONNREFUSED') {
+                console.error("🚫 Backend inacessível - verificar URL e conectividade");
+            }
         }
     }
 
