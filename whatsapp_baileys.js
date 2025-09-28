@@ -11,19 +11,25 @@ let firebaseAdmin = null;
 
 const loadModules = async () => {
     try {
-        // Carregar Baileys com estrutura corrigida
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
         
-        // Correção: tentar múltiplas formas de acessar makeWASocket
-        makeWASocket = baileys.makeWASocket || baileys.default?.makeWASocket || baileys.default;
+        // Na nova versão do Baileys, o export padrão É o makeWASocket
+        makeWASocket = baileys.default;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
         
-        // Verificar se conseguiu carregar makeWASocket
+        // Se baileys.default não for função, tentar baileys.makeWASocket
         if (typeof makeWASocket !== 'function') {
-            console.error("makeWASocket não é uma função. Estrutura do Baileys:", Object.keys(baileys));
+            console.log("Tentando baileys.makeWASocket...");
+            makeWASocket = baileys.makeWASocket;
+        }
+        
+        // Verificação final
+        if (typeof makeWASocket !== 'function') {
+            console.error("ERRO: makeWASocket não encontrado. Baileys pode ter mudado a estrutura.");
+            console.log("Exports disponíveis:", Object.keys(baileys).filter(key => typeof baileys[key] === 'function').slice(0, 5));
             return false;
         }
         
