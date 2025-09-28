@@ -2,11 +2,13 @@ module.exports = {
   apps: [
     {
       name: 'whatsapp-bot',
-      script: 'whatsapp_baileys.js',
+      script: 'whatsapp_baileys.mjs',
       instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: '1G',
+      interpreter: 'node',
+      node_args: '--es-module-specifier-resolution=node',
       env: {
         NODE_ENV: 'production',
         PORT: 8081
