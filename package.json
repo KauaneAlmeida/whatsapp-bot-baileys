@@ -18,8 +18,8 @@
     "nodemon": "^3.1.0"
   },
   "engines": {
-    "node": "18"
+    "node": ">=20"
   },
-  "author": "Seu Nome",
+  "author": "Isla",
   "license": "MIT"
 }
