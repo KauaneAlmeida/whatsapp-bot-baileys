@@ -1,10 +1,10 @@
 {
   "name": "whatsapp-bot",
   "version": "1.0.0",
-  "type": "commonjs",
   "main": "whatsapp_baileys.js",
   "scripts": {
-    "start": "node whatsapp_baileys.js"
+    "start": "node whatsapp_baileys.js",
+    "dev": "nodemon whatsapp_baileys.js"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -14,7 +14,12 @@
     "qrcode": "^1.5.3",
     "firebase-admin": "^11.11.0"
   },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
   "engines": {
     "node": "18"
-  }
+  },
+  "author": "Seu Nome",
+  "license": "MIT"
 }
