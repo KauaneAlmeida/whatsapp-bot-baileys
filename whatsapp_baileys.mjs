@@ -470,6 +470,7 @@ class BaileysWhatsAppBot {
             const payload = {
                 phone_number: remoteJid.split("@")[0],
                 message: messageText,
+
                 message_id: messageId,
             };
 
@@ -495,12 +496,18 @@ class BaileysWhatsAppBot {
         }
     }
 
+    // 🔧 Ajustado para simular digitando
     async sendMessage(to, message) {
         if (!this.isConnected || !this.sock) {
             throw new Error("WhatsApp not connected");
         }
 
         try {
+            // simula digitando
+            await this.sock.sendPresenceUpdate("composing", to);
+            await new Promise(res => setTimeout(res, 500));
+            await this.sock.sendPresenceUpdate("paused", to);
+
             const result = await this.sock.sendMessage(to, { text: message });
             return result.key.id;
         } catch (error) {
