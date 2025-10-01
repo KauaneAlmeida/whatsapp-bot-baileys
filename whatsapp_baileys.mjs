@@ -99,12 +99,14 @@ class CloudSessionManager {
                 return false;
             }
 
-            for (const file of files) {
-                const fileName = file.name.replace(`${this.cloudPath}/`, "");
-                const localPath = path.join(this.sessionPath, fileName);
-                await file.download({ destination: localPath });
-                console.log(`✔️ Sessão restaurada: ${fileName}`);
-            }
+            // 🔧 Ajuste: só pegar o mais recente
+            files.sort((a, b) => new Date(b.metadata.updated) - new Date(a.metadata.updated));
+            const latestFile = files[0];
+            const fileName = latestFile.name.replace(`${this.cloudPath}/`, "");
+            const localPath = path.join(this.sessionPath, fileName);
+
+            await latestFile.download({ destination: localPath });
+            console.log(`✔️ Sessão restaurada: ${fileName}`);
 
             return true;
         } catch (error) {
@@ -510,4 +512,3 @@ class BaileysWhatsAppBot {
 
 console.log("🚀 Iniciando WhatsApp Bot...");
 new BaileysWhatsAppBot();
-
