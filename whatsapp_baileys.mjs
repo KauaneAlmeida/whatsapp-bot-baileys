@@ -470,7 +470,6 @@ class BaileysWhatsAppBot {
             const payload = {
                 phone_number: remoteJid.split("@")[0],
                 message: messageText,
-
                 message_id: messageId,
             };
 
