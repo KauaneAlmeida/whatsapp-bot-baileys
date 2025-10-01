@@ -14,24 +14,13 @@ const loadModules = async () => {
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
 
-        makeWASocket = baileys.default;
+        makeWASocket = baileys.default || baileys.makeWASocket;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
 
         if (typeof makeWASocket !== "function") {
-            console.log("Tentando baileys.makeWASocket...");
-            makeWASocket = baileys.makeWASocket;
-        }
-
-        if (typeof makeWASocket !== "function") {
             console.error("ERRO: makeWASocket não encontrado.");
-            console.log(
-                "Exports disponíveis:",
-                Object.keys(baileys)
-                    .filter((key) => typeof baileys[key] === "function")
-                    .slice(0, 5)
-            );
             return false;
         }
 
@@ -193,6 +182,7 @@ class BaileysWhatsAppBot {
         this.maxQRAttempts = 3;
         this.baileysLoaded = false;
         this.modulesLoaded = false;
+        this.seenMessages = new Set();
         this.setupExpressServer();
     }
 
@@ -424,17 +414,22 @@ class BaileysWhatsAppBot {
                 try {
                     const msg = m.messages[0];
 
-                    // ignora mensagens inválidas, do próprio bot ou que não sejam notify
                     if (!msg.message || msg.key.fromMe || m.type !== "notify") return;
 
-                    // 🚨 filtro para ignorar mensagens antigas
+                    // 🚨 filtro: ignora mensagens antigas
                     const now = Math.floor(Date.now() / 1000);
                     const messageAge = now - (msg.messageTimestamp || now);
-
                     if (messageAge > 60) {
                         console.log("⏩ Ignorada mensagem antiga:", msg.key.id);
                         return;
                     }
+
+                    // 🚨 filtro: ignora duplicadas
+                    if (this.seenMessages.has(msg.key.id)) {
+                        console.log("🔁 Ignorada duplicada:", msg.key.id);
+                        return;
+                    }
+                    this.seenMessages.add(msg.key.id);
 
                     const messageText =
                         msg.message?.conversation ||
@@ -444,10 +439,8 @@ class BaileysWhatsAppBot {
                     if (messageText) {
                         console.log("📩 Nova mensagem:", messageText.substring(0, 50) + "...");
 
-                        // 👉 Marca como lida imediatamente
                         await this.sock.readMessages([msg.key]);
 
-                        // encaminha para backend
                         await this.forwardToBackend(
                             msg.key.remoteJid,
                             messageText,
@@ -502,9 +495,8 @@ class BaileysWhatsAppBot {
         }
 
         try {
-            // simula digitando
             await this.sock.sendPresenceUpdate("composing", to);
-            await new Promise(res => setTimeout(res, 500));
+            await new Promise(res => setTimeout(res, 1200));
             await this.sock.sendPresenceUpdate("paused", to);
 
             const result = await this.sock.sendMessage(to, { text: message });
@@ -518,3 +510,4 @@ class BaileysWhatsAppBot {
 
 console.log("🚀 Iniciando WhatsApp Bot...");
 new BaileysWhatsAppBot();
+
