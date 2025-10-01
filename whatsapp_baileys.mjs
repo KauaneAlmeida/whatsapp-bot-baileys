@@ -13,31 +13,32 @@ const loadModules = async () => {
     try {
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
-        
-        // Na nova versão do Baileys, o export padrão É o makeWASocket
+
         makeWASocket = baileys.default;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
-        
-        // Se baileys.default não for função, tentar baileys.makeWASocket
-        if (typeof makeWASocket !== 'function') {
+
+        if (typeof makeWASocket !== "function") {
             console.log("Tentando baileys.makeWASocket...");
             makeWASocket = baileys.makeWASocket;
         }
-        
-        // Verificação final
-        if (typeof makeWASocket !== 'function') {
-            console.error("ERRO: makeWASocket não encontrado. Baileys pode ter mudado a estrutura.");
-            console.log("Exports disponíveis:", Object.keys(baileys).filter(key => typeof baileys[key] === 'function').slice(0, 5));
+
+        if (typeof makeWASocket !== "function") {
+            console.error("ERRO: makeWASocket não encontrado.");
+            console.log(
+                "Exports disponíveis:",
+                Object.keys(baileys)
+                    .filter((key) => typeof baileys[key] === "function")
+                    .slice(0, 5)
+            );
             return false;
         }
-        
-        // Carregar Firebase Admin se necessário
+
         if (process.env.FIREBASE_KEY) {
             firebaseAdmin = await import("firebase-admin");
         }
-        
+
         console.log("✅ Módulos carregados com sucesso");
         return true;
     } catch (error) {
@@ -220,9 +221,9 @@ class BaileysWhatsAppBot {
 </head>
 <body>
     <h1>WhatsApp Bot</h1>
-    <p>Status: ${this.isConnected ? 'Conectado' : this.isConnecting ? 'Conectando...' : 'Desconectado'}</p>
-    <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
-    <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
+    <p>Status: ${this.isConnected ? "Conectado" : this.isConnecting ? "Conectando..." : "Desconectado"}</p>
+    <p>Baileys: ${this.baileysLoaded ? "Carregado" : "Não carregado"}</p>
+    <p>Módulos: ${this.modulesLoaded ? "Carregados" : "Não carregados"}</p>
     <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
     ${
         this.isConnected
@@ -232,7 +233,7 @@ class BaileysWhatsAppBot {
             : "<p>⏳ Carregando QR...</p>"
     }
     <button onclick="location.reload()">Refresh</button>
-    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset Sessão</button>' : ''}
+    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset Sessão</button>' : ""}
 </body>
 </html>`;
             res.send(htmlContent);
@@ -245,16 +246,16 @@ class BaileysWhatsAppBot {
                 this.qrAttempts = 0;
                 this.isConnecting = false;
                 qrCodeBase64 = null;
-                
+
                 if (this.sock) {
                     this.sock.end();
                     this.sock = null;
                 }
-                
+
                 setTimeout(() => {
                     this.initializeBailey();
                 }, 2000);
-                
+
                 res.json({ success: true, message: "Sessão resetada" });
             } catch (error) {
                 console.error("Reset session error:", error);
@@ -307,12 +308,11 @@ class BaileysWhatsAppBot {
 
     async initializeServices() {
         console.log("Inicializando serviços...");
-        
-        // Primeiro carregar todos os módulos
+
         console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
         this.baileysLoaded = this.modulesLoaded;
-        
+
         if (!this.modulesLoaded) {
             console.error("❌ Falha ao carregar módulos - abortando inicialização");
             return;
@@ -343,7 +343,7 @@ class BaileysWhatsAppBot {
 
         this.isConnecting = true;
         console.log("🔗 Inicializando conexão WhatsApp...");
-        
+
         try {
             if (!fs.existsSync(CONFIG.sessionPath)) {
                 fs.mkdirSync(CONFIG.sessionPath, { recursive: true });
@@ -367,11 +367,11 @@ class BaileysWhatsAppBot {
 
             this.sock.ev.on("connection.update", async (update) => {
                 const { connection, lastDisconnect, qr } = update;
-                
+
                 if (qr) {
                     this.qrAttempts++;
                     console.log(`📱 QR Code ${this.qrAttempts}/${this.maxQRAttempts} gerado`);
-                    
+
                     if (this.qrAttempts <= this.maxQRAttempts) {
                         qrcode.generate(qr, { small: true });
                         qrCodeBase64 = await QRCode.toDataURL(qr);
@@ -382,7 +382,7 @@ class BaileysWhatsAppBot {
                         this.sessionManager.clearLocalSession();
                     }
                 }
-                
+
                 if (connection === "open") {
                     console.log("✅ WhatsApp conectado com sucesso!");
                     this.isConnected = true;
@@ -391,18 +391,19 @@ class BaileysWhatsAppBot {
                     qrCodeBase64 = null;
                     await this.sessionManager.uploadSession();
                 }
-                
+
                 if (connection === "close") {
                     this.isConnected = false;
                     this.isConnecting = false;
                     qrCodeBase64 = null;
-                    
-                    const shouldReconnect = (lastDisconnect?.error instanceof Boom)
-                        ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
-                        : true;
+
+                    const shouldReconnect =
+                        lastDisconnect?.error instanceof Boom
+                            ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
+                            : true;
 
                     console.log("⚠️ Conexão fechada:", lastDisconnect?.error?.message);
-                    
+
                     if (shouldReconnect && this.qrAttempts < this.maxQRAttempts) {
                         console.log("🔄 Tentando reconectar em 10s...");
                         setTimeout(() => {
@@ -418,23 +419,40 @@ class BaileysWhatsAppBot {
 
             this.sock.ev.on("creds.update", this.saveCreds);
 
+            // 🔧 Listener de mensagens ajustado
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
-                    if (!msg.key.fromMe && m.type === "notify") {
-                        const messageText =
-                            msg.message?.conversation ||
-                            msg.message?.extendedTextMessage?.text ||
-                            null;
 
-                        if (messageText) {
-                            console.log("📩 Nova mensagem:", messageText.substring(0, 50) + "...");
-                            await this.forwardToBackend(
-                                msg.key.remoteJid,
-                                messageText,
-                                msg.key.id
-                            );
-                        }
+                    // ignora mensagens inválidas, do próprio bot ou que não sejam notify
+                    if (!msg.message || msg.key.fromMe || m.type !== "notify") return;
+
+                    // 🚨 filtro para ignorar mensagens antigas
+                    const now = Math.floor(Date.now() / 1000);
+                    const messageAge = now - (msg.messageTimestamp || now);
+
+                    if (messageAge > 60) {
+                        console.log("⏩ Ignorada mensagem antiga:", msg.key.id);
+                        return;
+                    }
+
+                    const messageText =
+                        msg.message?.conversation ||
+                        msg.message?.extendedTextMessage?.text ||
+                        null;
+
+                    if (messageText) {
+                        console.log("📩 Nova mensagem:", messageText.substring(0, 50) + "...");
+
+                        // 👉 Marca como lida imediatamente
+                        await this.sock.readMessages([msg.key]);
+
+                        // encaminha para backend
+                        await this.forwardToBackend(
+                            msg.key.remoteJid,
+                            messageText,
+                            msg.key.id
+                        );
                     }
                 } catch (error) {
                     console.error("Erro processar mensagem:", error);
@@ -459,9 +477,9 @@ class BaileysWhatsAppBot {
             const response = await axios.post(CONFIG.backendUrl, payload, {
                 timeout: 30000,
                 headers: {
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'WhatsApp-Bot/1.0'
-                }
+                    "Content-Type": "application/json",
+                    "User-Agent": "WhatsApp-Bot/1.0",
+                },
             });
 
             if (response.data && response.data.response) {
@@ -471,7 +489,7 @@ class BaileysWhatsAppBot {
             }
         } catch (error) {
             console.error("❌ Erro no backend:", error.message);
-            if (error.code === 'ECONNREFUSED') {
+            if (error.code === "ECONNREFUSED") {
                 console.error("🚫 Backend inacessível - verificar URL e conectividade");
             }
         }
