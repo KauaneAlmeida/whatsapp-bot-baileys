@@ -528,15 +528,22 @@ class BaileysWhatsAppBot {
                 return;
             }
 
-            // Filtro 4: Não é status
-            if (msg.key.remoteJid === "status@broadcast") {
+            const remoteJid = msg.key.remoteJid || "";
+
+            // ========== FILTRO 4: Ignora grupos ==========
+            if (remoteJid.includes("@g.us")) {
+                return;
+            }
+
+            // Filtro 5: Não é status
+            if (remoteJid === "status@broadcast") {
                 return;
             }
 
             const msgId = msg.key.id;
             if (!msgId) return;
 
-            // ========== FILTRO 5: Duplicada (MARCA IMEDIATAMENTE) ==========
+            // ========== FILTRO 6: Duplicada (MARCA IMEDIATAMENTE) ==========
             if (this.seenMessages.has(msgId)) {
                 console.log(`🔁 DUPLICADA bloqueada: ${msgId}`);
                 return;
@@ -544,7 +551,7 @@ class BaileysWhatsAppBot {
             // MARCA AGORA para bloquear qualquer reprocessamento
             this.seenMessages.add(msgId);
 
-            // Filtro 6: Extrai timestamp
+            // Filtro 7: Extrai timestamp
             let msgTimestamp = null;
             if (msg.messageTimestamp) {
                 msgTimestamp = Number(msg.messageTimestamp);
@@ -559,11 +566,10 @@ class BaileysWhatsAppBot {
 
             const msgTimestampMs = msgTimestamp * 1000;
 
-            // ========== FILTRO PRINCIPAL: Timestamp ==========
+            // ========== FILTRO 8: Timestamp ==========
             if (msgTimestampMs <= this.processMessagesAfter) {
                 const diffSeconds = Math.floor((this.processMessagesAfter - msgTimestampMs) / 1000);
                 console.log(`⏩ IGNORADA (${diffSeconds}s antes do corte): ${msgId}`);
-                // NÃO remove do Set - já marcamos como vista acima
                 return;
             }
 
@@ -579,7 +585,6 @@ class BaileysWhatsAppBot {
                 return;
             }
 
-            const remoteJid = msg.key.remoteJid;
             const ageSeconds = Math.floor((Date.now() - msgTimestampMs) / 1000);
             
             console.log(`\n📩 MENSAGEM VÁLIDA processada:`);
@@ -599,11 +604,22 @@ class BaileysWhatsAppBot {
             await this.forwardToBackend(remoteJid, messageText, msgId);
             
         } catch (err) {
+            // ========== Ignora erros de descriptografia ==========
+            if (err.message && err.message.includes("decrypt")) {
+                console.log(`⚠️ Erro de descriptografia ignorado: ${msgId || 'unknown'}`);
+                return;
+            }
             console.error("❌ Erro processMessage:", err);
         }
     }
 
     async forwardToBackend(remoteJid, messageText, messageId) {
+        // ========== FILTRO: Ignora grupos ==========
+        if (remoteJid.includes("@g.us")) {
+            console.log(`🚫 Ignorando mensagem de grupo: ${remoteJid}`);
+            return;
+        }
+
         const payload = {
             phone_number: remoteJid.split("@")[0],
             message: messageText,
@@ -611,7 +627,7 @@ class BaileysWhatsAppBot {
         };
 
         // ========== DEDUPE: Verifica se já está na fila ==========
-        const isDuplicate = this.queue.some(task => 
+        const isDuplicate = backendQueue.queue.some(task => 
             task.payload.message_id === messageId && 
             task.payload.phone_number === payload.phone_number
         );
