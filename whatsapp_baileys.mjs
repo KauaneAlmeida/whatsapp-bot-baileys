@@ -5,7 +5,6 @@ import axios from "axios";
 import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 
-// Variáveis globais para módulos
 let makeWASocket, DisconnectReason, useMultiFileAuthState, Boom;
 let firebaseAdmin = null;
 
@@ -14,26 +13,22 @@ const loadModules = async () => {
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
         
-        // Na nova versão do Baileys, o export padrão É o makeWASocket
         makeWASocket = baileys.default;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
         
-        // Se baileys.default não for função, tentar baileys.makeWASocket
         if (typeof makeWASocket !== 'function') {
             console.log("Tentando baileys.makeWASocket...");
             makeWASocket = baileys.makeWASocket;
         }
         
-        // Verificação final
         if (typeof makeWASocket !== 'function') {
             console.error("ERRO: makeWASocket não encontrado. Baileys pode ter mudado a estrutura.");
             console.log("Exports disponíveis:", Object.keys(baileys).filter(key => typeof baileys[key] === 'function').slice(0, 5));
             return false;
         }
         
-        // Carregar Firebase Admin se necessário
         if (process.env.FIREBASE_KEY) {
             firebaseAdmin = await import("firebase-admin");
         }
@@ -46,7 +41,6 @@ const loadModules = async () => {
     }
 };
 
-// Firebase Storage
 let firebaseStorage = null;
 let storageBucket = null;
 let isFirebaseConnected = false;
@@ -192,7 +186,29 @@ class BaileysWhatsAppBot {
         this.maxQRAttempts = 3;
         this.baileysLoaded = false;
         this.modulesLoaded = false;
+        
+        // 🔥 CACHE DE DEDUPLICAÇÃO DE MENSAGENS
+        this.processedMessages = new Map(); // Map<messageId, timestamp>
+        this.connectionTimestamp = null; // Timestamp da conexão atual
+        
         this.setupExpressServer();
+        this.startMessageCleanup();
+    }
+
+    // 🔥 LIMPA CACHE A CADA 10 MINUTOS
+    startMessageCleanup() {
+        setInterval(() => {
+            const now = Date.now();
+            const tenMinutesAgo = now - (10 * 60 * 1000);
+            
+            for (const [msgId, timestamp] of this.processedMessages.entries()) {
+                if (timestamp < tenMinutesAgo) {
+                    this.processedMessages.delete(msgId);
+                }
+            }
+            
+            console.log(`🧹 Cache limpo: ${this.processedMessages.size} mensagens ativas`);
+        }, 10 * 60 * 1000);
     }
 
     setupExpressServer() {
@@ -205,6 +221,7 @@ class BaileysWhatsAppBot {
                 baileys_loaded: this.baileysLoaded,
                 modules_loaded: this.modulesLoaded,
                 qr_attempts: this.qrAttempts,
+                processed_messages: this.processedMessages.size,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString(),
             });
@@ -224,6 +241,7 @@ class BaileysWhatsAppBot {
     <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
     <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
     <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
+    <p>Mensagens no cache: ${this.processedMessages.size}</p>
     ${
         this.isConnected
             ? "<p>✅ Conectado com sucesso!</p>"
@@ -245,6 +263,8 @@ class BaileysWhatsAppBot {
                 this.qrAttempts = 0;
                 this.isConnecting = false;
                 qrCodeBase64 = null;
+                this.processedMessages.clear();
+                this.connectionTimestamp = null;
                 
                 if (this.sock) {
                     this.sock.end();
@@ -308,7 +328,6 @@ class BaileysWhatsAppBot {
     async initializeServices() {
         console.log("Inicializando serviços...");
         
-        // Primeiro carregar todos os módulos
         console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
         this.baileysLoaded = this.modulesLoaded;
@@ -363,6 +382,8 @@ class BaileysWhatsAppBot {
                 retryRequestDelayMs: 250,
                 maxMsgRetryCount: 5,
                 markOnlineOnConnect: true,
+                syncFullHistory: false, // 🔥 NÃO SINCRONIZA HISTÓRICO
+                getMessage: async () => undefined // 🔥 NÃO PROCESSA MENSAGENS ANTIGAS
             });
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -389,6 +410,14 @@ class BaileysWhatsAppBot {
                     this.isConnecting = false;
                     this.qrAttempts = 0;
                     qrCodeBase64 = null;
+                    
+                    // 🔥 MARCA TIMESTAMP DA CONEXÃO
+                    this.connectionTimestamp = Math.floor(Date.now() / 1000);
+                    console.log(`🕐 Conexão estabelecida em: ${new Date().toISOString()}`);
+                    
+                    // 🔥 LIMPA CACHE DE MENSAGENS ANTIGAS
+                    this.processedMessages.clear();
+                    
                     await this.sessionManager.uploadSession();
                 }
                 
@@ -396,6 +425,7 @@ class BaileysWhatsAppBot {
                     this.isConnected = false;
                     this.isConnecting = false;
                     qrCodeBase64 = null;
+                    this.connectionTimestamp = null;
                     
                     const shouldReconnect = (lastDisconnect?.error instanceof Boom)
                         ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
@@ -418,38 +448,59 @@ class BaileysWhatsAppBot {
 
             this.sock.ev.on("creds.update", this.saveCreds);
 
-            // 🔧 Listener de mensagens ajustado
+            // 🔥 LISTENER OTIMIZADO - SEM DUPLICAÇÃO E SEM MENSAGENS ANTIGAS
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
 
-                    // ignora mensagens inválidas, do próprio bot ou que não sejam notify
-                    if (!msg.message || msg.key.fromMe || m.type !== "notify") return;
-
-                    // 🚨 filtro para ignorar mensagens antigas
-                    const now = Math.floor(Date.now() / 1000); // timestamp atual em segundos
-                    const messageAge = now - (msg.messageTimestamp || now);
-
-                    if (messageAge > 60) { // ignora mensagens com mais de 60s
-                        console.log("⏩ Ignorada mensagem antiga:", msg.key.id);
+                    // ✅ Ignora se não for mensagem válida
+                    if (!msg || !msg.message || msg.key.fromMe || m.type !== "notify") {
                         return;
                     }
 
+                    const messageId = msg.key.id;
+                    const messageTimestamp = msg.messageTimestamp || Math.floor(Date.now() / 1000);
+                    
+                    // 🔥 FILTRO 1: DEDUPLICAÇÃO - verifica se já processou
+                    if (this.processedMessages.has(messageId)) {
+                        console.log(`⏭️ [DUPLICADA] ${messageId.substring(0, 10)}...`);
+                        return;
+                    }
+
+                    // 🔥 FILTRO 2: IGNORA MENSAGENS ANTERIORES À CONEXÃO
+                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
+                        console.log(`⏮️ [ANTIGA] ${messageId.substring(0, 10)}... (${this.connectionTimestamp - messageTimestamp}s antes da conexão)`);
+                        return;
+                    }
+
+                    // 🔥 FILTRO 3: IGNORA MENSAGENS COM MAIS DE 30 SEGUNDOS
+                    const now = Math.floor(Date.now() / 1000);
+                    const messageAge = now - messageTimestamp;
+
+                    if (messageAge > 30) {
+                        console.log(`⏰ [EXPIRADA] ${messageId.substring(0, 10)}... (${messageAge}s atrás)`);
+                        return;
+                    }
+
+                    // 🔥 ADICIONA NO CACHE ANTES DE PROCESSAR
+                    this.processedMessages.set(messageId, Date.now());
+
+                    // ✅ PROCESSA MENSAGEM
                     const messageText =
                         msg.message?.conversation ||
                         msg.message?.extendedTextMessage?.text ||
                         null;
 
                     if (messageText) {
-                        console.log("📩 Nova mensagem:", messageText.substring(0, 50) + "...");
+                        console.log(`📨 [NOVA] ${messageId.substring(0, 10)}... | ${messageText.substring(0, 40)}...`);
                         await this.forwardToBackend(
                             msg.key.remoteJid,
                             messageText,
-                            msg.key.id
+                            messageId
                         );
                     }
                 } catch (error) {
-                    console.error("Erro processar mensagem:", error);
+                    console.error("❌ Erro ao processar mensagem:", error.message);
                 }
             });
         } catch (error) {
