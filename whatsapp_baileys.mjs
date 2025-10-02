@@ -5,6 +5,7 @@ import axios from "axios";
 import qrcode from "qrcode-terminal";
 import QRCode from "qrcode";
 
+// Variáveis globais para módulos
 let makeWASocket, DisconnectReason, useMultiFileAuthState, Boom;
 let firebaseAdmin = null;
 
@@ -13,20 +14,26 @@ const loadModules = async () => {
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
         
+        // Na nova versão do Baileys, o export padrão É o makeWASocket
         makeWASocket = baileys.default;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
         Boom = boom.Boom;
         
+        // Se baileys.default não for função, tentar baileys.makeWASocket
         if (typeof makeWASocket !== 'function') {
+            console.log("Tentando baileys.makeWASocket...");
             makeWASocket = baileys.makeWASocket;
         }
         
+        // Verificação final
         if (typeof makeWASocket !== 'function') {
-            console.error("ERRO: makeWASocket não encontrado");
+            console.error("ERRO: makeWASocket não encontrado. Baileys pode ter mudado a estrutura.");
+            console.log("Exports disponíveis:", Object.keys(baileys).filter(key => typeof baileys[key] === 'function').slice(0, 5));
             return false;
         }
         
+        // Carregar Firebase Admin se necessário
         if (process.env.FIREBASE_KEY) {
             firebaseAdmin = await import("firebase-admin");
         }
@@ -39,6 +46,7 @@ const loadModules = async () => {
     }
 };
 
+// Firebase Storage
 let firebaseStorage = null;
 let storageBucket = null;
 let isFirebaseConnected = false;
@@ -101,18 +109,8 @@ class CloudSessionManager {
                 return false;
             }
 
-            const authFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
-            
             for (const file of files) {
                 const fileName = file.name.replace(`${this.cloudPath}/`, "");
-                
-                if (fileName.includes('session-') || 
-                    fileName.includes('sender-key') || 
-                    fileName.includes('message-')) {
-                    console.log(`⏭️ Ignorando histórico: ${fileName}`);
-                    continue;
-                }
-                
                 const localPath = path.join(this.sessionPath, fileName);
                 await file.download({ destination: localPath });
                 console.log(`✔️ Sessão restaurada: ${fileName}`);
@@ -137,13 +135,7 @@ class CloudSessionManager {
             const files = fs.readdirSync(this.sessionPath);
             let uploaded = 0;
 
-            const essentialFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
-
             for (const fileName of files) {
-                if (!essentialFiles.some(f => fileName.includes(f))) {
-                    continue;
-                }
-                
                 const localPath = path.join(this.sessionPath, fileName);
                 const cloudPath = `${this.cloudPath}/${fileName}`;
                 await storageBucket.upload(localPath, { destination: cloudPath });
@@ -173,29 +165,6 @@ class CloudSessionManager {
             console.log("🧹 Sessão local removida");
         }
     }
-    
-    clearMessageHistory() {
-        try {
-            if (!fs.existsSync(this.sessionPath)) return;
-            
-            const files = fs.readdirSync(this.sessionPath);
-            let cleaned = 0;
-            
-            for (const file of files) {
-                if (file.includes('session-') || 
-                    file.includes('sender-key') || 
-                    file.includes('message-')) {
-                    const filePath = path.join(this.sessionPath, file);
-                    fs.unlinkSync(filePath);
-                    cleaned++;
-                }
-            }
-            
-            console.log(`🧹 Histórico limpo: ${cleaned} arquivos removidos`);
-        } catch (error) {
-            console.error("Erro ao limpar histórico:", error.message);
-        }
-    }
 }
 
 const CONFIG = {
@@ -223,11 +192,6 @@ class BaileysWhatsAppBot {
         this.maxQRAttempts = 3;
         this.baileysLoaded = false;
         this.modulesLoaded = false;
-        this.connectionTimestamp = null;
-        this.STALE_MESSAGE_THRESHOLD = 3 * 60;
-        this.processedMessages = new Set();
-        this.MESSAGE_CACHE_LIMIT = 1000;
-
         this.setupExpressServer();
     }
 
@@ -243,7 +207,6 @@ class BaileysWhatsAppBot {
                 qr_attempts: this.qrAttempts,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString(),
-                processed_messages_cache: this.processedMessages.size
             });
         });
 
@@ -259,16 +222,17 @@ class BaileysWhatsAppBot {
     <h1>WhatsApp Bot</h1>
     <p>Status: ${this.isConnected ? 'Conectado' : this.isConnecting ? 'Conectando...' : 'Desconectado'}</p>
     <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
-    <p>Cache: ${this.processedMessages.size} msgs</p>
+    <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
+    <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
     ${
         this.isConnected
             ? "<p>✅ Conectado com sucesso!</p>"
             : qrCodeBase64
-            ? `<img src="${qrCodeBase64}" alt="QR Code" style="max-width:300px;"><br><p>Escaneie RAPIDAMENTE</p>`
+            ? `<img src="${qrCodeBase64}" alt="QR Code" style="max-width:300px;"><br><p>Escaneie RAPIDAMENTE (expira em ~20s)</p>`
             : "<p>⏳ Carregando QR...</p>"
     }
     <button onclick="location.reload()">Refresh</button>
-    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset</button>' : ''}
+    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset Sessão</button>' : ''}
 </body>
 </html>`;
             res.send(htmlContent);
@@ -281,8 +245,6 @@ class BaileysWhatsAppBot {
                 this.qrAttempts = 0;
                 this.isConnecting = false;
                 qrCodeBase64 = null;
-                this.connectionTimestamp = null;
-                this.processedMessages.clear();
                 
                 if (this.sock) {
                     this.sock.end();
@@ -346,11 +308,13 @@ class BaileysWhatsAppBot {
     async initializeServices() {
         console.log("Inicializando serviços...");
         
+        // Primeiro carregar todos os módulos
+        console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
         this.baileysLoaded = this.modulesLoaded;
         
         if (!this.modulesLoaded) {
-            console.error("❌ Falha ao carregar módulos");
+            console.error("❌ Falha ao carregar módulos - abortando inicialização");
             return;
         }
 
@@ -368,12 +332,12 @@ class BaileysWhatsAppBot {
 
     async initializeBailey() {
         if (this.isConnecting) {
-            console.log("⚠️ Já está conectando");
+            console.log("⚠️ Já está conectando, ignorando nova tentativa");
             return;
         }
 
         if (!this.baileysLoaded) {
-            console.error("❌ Baileys não carregado");
+            console.error("❌ Baileys não foi carregado - não é possível inicializar");
             return;
         }
 
@@ -399,8 +363,6 @@ class BaileysWhatsAppBot {
                 retryRequestDelayMs: 250,
                 maxMsgRetryCount: 5,
                 markOnlineOnConnect: true,
-                syncFullHistory: false,
-                getMessage: async () => undefined
             });
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -408,31 +370,25 @@ class BaileysWhatsAppBot {
                 
                 if (qr) {
                     this.qrAttempts++;
-                    console.log(`📱 QR ${this.qrAttempts}/${this.maxQRAttempts}`);
+                    console.log(`📱 QR Code ${this.qrAttempts}/${this.maxQRAttempts} gerado`);
                     
                     if (this.qrAttempts <= this.maxQRAttempts) {
                         qrcode.generate(qr, { small: true });
                         qrCodeBase64 = await QRCode.toDataURL(qr);
+                        console.log("📲 QR Code pronto - escaneie RAPIDAMENTE!");
                     } else {
-                        console.log("❌ Muitas tentativas");
+                        console.log("❌ Muitas tentativas de QR - resetar sessão necessário");
                         qrCodeBase64 = null;
                         this.sessionManager.clearLocalSession();
                     }
                 }
                 
                 if (connection === "open") {
-                    console.log("✅ WhatsApp conectado!");
+                    console.log("✅ WhatsApp conectado com sucesso!");
                     this.isConnected = true;
                     this.isConnecting = false;
                     this.qrAttempts = 0;
                     qrCodeBase64 = null;
-
-                    this.connectionTimestamp = Math.floor(Date.now() / 1000);
-                    console.log(`🕐 Connection timestamp: ${this.connectionTimestamp}`);
-
-                    this.sessionManager.clearMessageHistory();
-                    this.processedMessages.clear();
-
                     await this.sessionManager.uploadSession();
                 }
                 
@@ -440,17 +396,20 @@ class BaileysWhatsAppBot {
                     this.isConnected = false;
                     this.isConnecting = false;
                     qrCodeBase64 = null;
-                    this.connectionTimestamp = null;
                     
                     const shouldReconnect = (lastDisconnect?.error instanceof Boom)
                         ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
                         : true;
 
-                    console.log("⚠️ Conexão fechada");
+                    console.log("⚠️ Conexão fechada:", lastDisconnect?.error?.message);
                     
                     if (shouldReconnect && this.qrAttempts < this.maxQRAttempts) {
-                        setTimeout(() => this.initializeBailey(), 10000);
+                        console.log("🔄 Tentando reconectar em 10s...");
+                        setTimeout(() => {
+                            this.initializeBailey();
+                        }, 10000);
                     } else {
+                        console.log("❌ Não reconectando - muitas tentativas ou deslogado");
                         this.sessionManager.clearLocalSession();
                         this.qrAttempts = 0;
                     }
@@ -462,66 +421,23 @@ class BaileysWhatsAppBot {
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
+                    if (!msg.key.fromMe && m.type === "notify") {
+                        const messageText =
+                            msg.message?.conversation ||
+                            msg.message?.extendedTextMessage?.text ||
+                            null;
 
-                    if (!msg || !msg.message || msg.key.fromMe || m.type !== "notify") {
-                        return;
+                        if (messageText) {
+                            console.log("📩 Nova mensagem:", messageText.substring(0, 50) + "...");
+                            await this.forwardToBackend(
+                                msg.key.remoteJid,
+                                messageText,
+                                msg.key.id
+                            );
+                        }
                     }
-
-                    const messageId = msg.key.id;
-                    const remoteJid = msg.key.remoteJid;
-                    const phoneNumber = remoteJid.split("@")[0];
-                    const messageTimestamp = msg.messageTimestamp?.low || msg.messageTimestamp || Math.floor(Date.now() / 1000);
-
-                    if (remoteJid.endsWith('@g.us')) {
-                        console.log(`⏭️ GRUPO IGNORADO | ${messageId.substring(0, 10)}... | ${remoteJid}`);
-                        return;
-                    }
-
-                    if (this.processedMessages.has(messageId)) {
-                        console.log(`⏭️ CACHE HIT | ${messageId.substring(0, 10)}...`);
-                        return;
-                    }
-
-                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
-                        console.log(`⏭️ PRE-CONNECTION | ${messageId.substring(0, 10)}... | ${this.connectionTimestamp - messageTimestamp}s old`);
-                        return;
-                    }
-
-                    const now = Math.floor(Date.now() / 1000);
-                    const messageAge = now - messageTimestamp;
-                    
-                    if (messageAge > this.STALE_MESSAGE_THRESHOLD) {
-                        console.log(`⏭️ TOO OLD | ${messageId.substring(0, 10)}... | ${messageAge}s`);
-                        return;
-                    }
-
-                    const messageText =
-                        msg.message?.conversation ||
-                        msg.message?.extendedTextMessage?.text ||
-                        null;
-
-                    if (!messageText) {
-                        return;
-                    }
-
-                    this.processedMessages.add(messageId);
-                    
-                    if (this.processedMessages.size > this.MESSAGE_CACHE_LIMIT) {
-                        const firstItems = Array.from(this.processedMessages).slice(0, 500);
-                        firstItems.forEach(id => this.processedMessages.delete(id));
-                    }
-
-                    console.log(`✅ NEW MSG | ${messageId.substring(0, 10)}... | ${phoneNumber} | "${messageText.substring(0, 30)}..."`);
-
-                    await this.forwardToBackend(
-                        remoteJid,
-                        messageText,
-                        messageId,
-                        phoneNumber
-                    );
-
                 } catch (error) {
-                    console.error("❌ Error processing:", error.message);
+                    console.error("Erro processar mensagem:", error);
                 }
             });
         } catch (error) {
@@ -531,17 +447,15 @@ class BaileysWhatsAppBot {
         }
     }
 
-    async forwardToBackend(remoteJid, messageText, messageId, phoneNumber) {
+    async forwardToBackend(remoteJid, messageText, messageId) {
         try {
             const payload = {
-                phone_number: phoneNumber,
+                phone_number: remoteJid.split("@")[0],
                 message: messageText,
                 message_id: messageId,
-                timestamp: Math.floor(Date.now() / 1000)
             };
 
-            console.log(`🔗 → Backend | ${messageId.substring(0, 10)}...`);
-
+            console.log("🔗 Enviando para backend:", payload.phone_number);
             const response = await axios.post(CONFIG.backendUrl, payload, {
                 timeout: 30000,
                 headers: {
@@ -550,21 +464,16 @@ class BaileysWhatsAppBot {
                 }
             });
 
-            if (response.data) {
-                const status = response.data.status;
-
-                if (status === 'ignored') {
-                    console.log(`⏭️ Backend ignored: ${response.data.reason}`);
-                    return;
-                }
-
-                if (response.data.response) {
-                    await this.sendMessage(remoteJid, response.data.response);
-                    console.log(`✅ Response sent`);
-                }
+            if (response.data && response.data.response) {
+                const reply = response.data.response;
+                await this.sendMessage(remoteJid, reply);
+                console.log("✅ Resposta enviada");
             }
         } catch (error) {
-            console.error(`❌ Backend error:`, error.message);
+            console.error("❌ Erro no backend:", error.message);
+            if (error.code === 'ECONNREFUSED') {
+                console.error("🚫 Backend inacessível - verificar URL e conectividade");
+            }
         }
     }
 
