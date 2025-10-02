@@ -20,7 +20,7 @@ const loadModules = async () => {
         Boom = boom.Boom;
 
         if (typeof makeWASocket !== "function") {
-            console.error("ERRO: makeWASocket não encontrado.");
+            console.error("❌ ERRO: makeWASocket não encontrado.");
             return false;
         }
 
@@ -44,12 +44,12 @@ let isFirebaseConnected = false;
 const initializeFirebaseStorage = async () => {
     try {
         if (!process.env.FIREBASE_KEY) {
-            console.log("Firebase Storage não configurado");
+            console.log("⚠️ Firebase Storage não configurado");
             return;
         }
 
         if (!firebaseAdmin) {
-            console.error("Firebase Admin não foi carregado");
+            console.error("❌ Firebase Admin não foi carregado");
             return;
         }
 
@@ -69,7 +69,7 @@ const initializeFirebaseStorage = async () => {
 
         console.log("✅ Firebase Storage conectado");
     } catch (error) {
-        console.error("Erro Firebase Storage:", error.message);
+        console.error("❌ Erro Firebase Storage:", error.message);
         isFirebaseConnected = false;
     }
 };
@@ -95,11 +95,11 @@ class CloudSessionManager {
             const [files] = await storageBucket.getFiles({ prefix: this.cloudPath });
 
             if (files.length === 0) {
-                console.log("Nenhuma sessão encontrada no bucket");
+                console.log("⚠️ Nenhuma sessão encontrada no bucket");
                 return false;
             }
 
-            // 🔧 Ajuste: só pegar o mais recente
+            // Pega a mais recente
             files.sort((a, b) => new Date(b.metadata.updated) - new Date(a.metadata.updated));
             const latestFile = files[0];
             const fileName = latestFile.name.replace(`${this.cloudPath}/`, "");
@@ -110,7 +110,7 @@ class CloudSessionManager {
 
             return true;
         } catch (error) {
-            console.error("Erro ao restaurar sessão:", error.message);
+            console.error("❌ Erro ao restaurar sessão:", error.message);
             return false;
         }
     }
@@ -138,7 +138,7 @@ class CloudSessionManager {
             console.log(`⬆️ Backup da sessão: ${uploaded} arquivos enviados`);
             return true;
         } catch (error) {
-            console.error("Erro ao enviar sessão:", error.message);
+            console.error("❌ Erro ao enviar sessão:", error.message);
             return false;
         }
     }
@@ -250,7 +250,7 @@ class BaileysWhatsAppBot {
 
                 res.json({ success: true, message: "Sessão resetada" });
             } catch (error) {
-                console.error("Reset session error:", error);
+                console.error("❌ Reset session error:", error);
                 res.status(500).json({ success: false, error: error.message });
             }
         });
@@ -299,9 +299,8 @@ class BaileysWhatsAppBot {
     }
 
     async initializeServices() {
-        console.log("Inicializando serviços...");
+        console.log("⚙️ Inicializando serviços...");
 
-        console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
         this.baileysLoaded = this.modulesLoaded;
 
@@ -411,14 +410,13 @@ class BaileysWhatsAppBot {
 
             this.sock.ev.on("creds.update", this.saveCreds);
 
-            // 🔧 Listener de mensagens ajustado
+            // Listener de mensagens
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
 
                     if (!msg.message || msg.key.fromMe || m.type !== "notify") return;
 
-                    // 🚨 filtro: ignora mensagens antigas
                     const now = Math.floor(Date.now() / 1000);
                     const messageAge = now - (msg.messageTimestamp || now);
                     if (messageAge > 60) {
@@ -426,7 +424,6 @@ class BaileysWhatsAppBot {
                         return;
                     }
 
-                    // 🚨 filtro: ignora duplicadas
                     if (this.seenMessages.has(msg.key.id)) {
                         console.log("🔁 Ignorada duplicada:", msg.key.id);
                         return;
@@ -450,7 +447,7 @@ class BaileysWhatsAppBot {
                         );
                     }
                 } catch (error) {
-                    console.error("Erro processar mensagem:", error);
+                    console.error("❌ Erro processar mensagem:", error);
                 }
             });
         } catch (error) {
@@ -490,7 +487,6 @@ class BaileysWhatsAppBot {
         }
     }
 
-    // 🔧 Ajustado para simular digitando
     async sendMessage(to, message) {
         if (!this.isConnected || !this.sock) {
             throw new Error("WhatsApp not connected");
@@ -504,7 +500,7 @@ class BaileysWhatsAppBot {
             const result = await this.sock.sendMessage(to, { text: message });
             return result.key.id;
         } catch (error) {
-            console.error("Erro enviar:", error);
+            console.error("❌ Erro enviar:", error);
             throw error;
         }
     }
