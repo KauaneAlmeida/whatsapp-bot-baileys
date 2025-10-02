@@ -101,13 +101,11 @@ class CloudSessionManager {
                 return false;
             }
 
-            // 🔥 CRÍTICO: Baixar apenas arquivos de autenticação, NÃO histórico
             const authFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
             
             for (const file of files) {
                 const fileName = file.name.replace(`${this.cloudPath}/`, "");
                 
-                // 🔥 PULAR arquivos de histórico de mensagens
                 if (fileName.includes('session-') || 
                     fileName.includes('sender-key') || 
                     fileName.includes('message-')) {
@@ -139,11 +137,9 @@ class CloudSessionManager {
             const files = fs.readdirSync(this.sessionPath);
             let uploaded = 0;
 
-            // 🔥 BACKUP: Apenas arquivos essenciais, não histórico
             const essentialFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
 
             for (const fileName of files) {
-                // Ignorar histórico no backup também
                 if (!essentialFiles.some(f => fileName.includes(f))) {
                     continue;
                 }
@@ -178,7 +174,6 @@ class CloudSessionManager {
         }
     }
     
-    // 🔥 NOVO: Limpar histórico local após conexão
     clearMessageHistory() {
         try {
             if (!fs.existsSync(this.sessionPath)) return;
@@ -229,8 +224,8 @@ class BaileysWhatsAppBot {
         this.baileysLoaded = false;
         this.modulesLoaded = false;
         this.connectionTimestamp = null;
-        this.STALE_MESSAGE_THRESHOLD = 3 * 60; // 3 minutos
-        this.processedMessages = new Set(); // 🔥 Cache local
+        this.STALE_MESSAGE_THRESHOLD = 3 * 60;
+        this.processedMessages = new Set();
         this.MESSAGE_CACHE_LIMIT = 1000;
 
         this.setupExpressServer();
@@ -287,7 +282,7 @@ class BaileysWhatsAppBot {
                 this.isConnecting = false;
                 qrCodeBase64 = null;
                 this.connectionTimestamp = null;
-                this.processedMessages.clear(); // 🔥 Limpar cache
+                this.processedMessages.clear();
                 
                 if (this.sock) {
                     this.sock.end();
@@ -404,8 +399,8 @@ class BaileysWhatsAppBot {
                 retryRequestDelayMs: 250,
                 maxMsgRetryCount: 5,
                 markOnlineOnConnect: true,
-                syncFullHistory: false, // 🔥 NÃO SINCRONIZA HISTÓRICO
-                getMessage: async () => undefined // 🔥 NÃO PROCESSA ANTIGAS
+                syncFullHistory: false,
+                getMessage: async () => undefined
             });
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -432,12 +427,11 @@ class BaileysWhatsAppBot {
                     this.qrAttempts = 0;
                     qrCodeBase64 = null;
 
-                    // 🔥 TIMESTAMP ANTES de processar qualquer mensagem
                     this.connectionTimestamp = Math.floor(Date.now() / 1000);
                     console.log(`🕐 Connection timestamp: ${this.connectionTimestamp}`);
 
-                    // 🔥 LIMPAR histórico local
                     this.sessionManager.clearMessageHistory();
+                    this.processedMessages.clear();
 
                     await this.sessionManager.uploadSession();
                 }
@@ -469,28 +463,30 @@ class BaileysWhatsAppBot {
                 try {
                     const msg = m.messages[0];
 
-                    // 🔥 FILTROS IMEDIATOS (antes de qualquer processamento)
                     if (!msg || !msg.message || msg.key.fromMe || m.type !== "notify") {
                         return;
                     }
 
                     const messageId = msg.key.id;
-                    const phoneNumber = msg.key.remoteJid.split("@")[0];
+                    const remoteJid = msg.key.remoteJid;
+                    const phoneNumber = remoteJid.split("@")[0];
                     const messageTimestamp = msg.messageTimestamp?.low || msg.messageTimestamp || Math.floor(Date.now() / 1000);
 
-                    // 🔥 VERIFICAÇÃO 1: Cache local (mais rápido)
+                    if (remoteJid.endsWith('@g.us')) {
+                        console.log(`⏭️ GRUPO IGNORADO | ${messageId.substring(0, 10)}... | ${remoteJid}`);
+                        return;
+                    }
+
                     if (this.processedMessages.has(messageId)) {
                         console.log(`⏭️ CACHE HIT | ${messageId.substring(0, 10)}...`);
                         return;
                     }
 
-                    // 🔥 VERIFICAÇÃO 2: Mensagem antes da conexão
                     if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
                         console.log(`⏭️ PRE-CONNECTION | ${messageId.substring(0, 10)}... | ${this.connectionTimestamp - messageTimestamp}s old`);
                         return;
                     }
 
-                    // 🔥 VERIFICAÇÃO 3: Mensagem muito antiga
                     const now = Math.floor(Date.now() / 1000);
                     const messageAge = now - messageTimestamp;
                     
@@ -508,10 +504,8 @@ class BaileysWhatsAppBot {
                         return;
                     }
 
-                    // 🔥 ADICIONAR ao cache ANTES de processar
                     this.processedMessages.add(messageId);
                     
-                    // Limpar cache se muito grande
                     if (this.processedMessages.size > this.MESSAGE_CACHE_LIMIT) {
                         const firstItems = Array.from(this.processedMessages).slice(0, 500);
                         firstItems.forEach(id => this.processedMessages.delete(id));
@@ -520,7 +514,7 @@ class BaileysWhatsAppBot {
                     console.log(`✅ NEW MSG | ${messageId.substring(0, 10)}... | ${phoneNumber} | "${messageText.substring(0, 30)}..."`);
 
                     await this.forwardToBackend(
-                        msg.key.remoteJid,
+                        remoteJid,
                         messageText,
                         messageId,
                         phoneNumber
@@ -543,7 +537,7 @@ class BaileysWhatsAppBot {
                 phone_number: phoneNumber,
                 message: messageText,
                 message_id: messageId,
-                timestamp: Math.floor(Date.now() / 1000) // 🔥 Adicionar timestamp
+                timestamp: Math.floor(Date.now() / 1000)
             };
 
             console.log(`🔗 → Backend | ${messageId.substring(0, 10)}...`);
