@@ -1,4 +1,4 @@
-// whatsapp_baileys.mjs
+// whatsapp_baileys.mjs - VERSÃO CORRIGIDA
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -15,7 +15,6 @@ const loadModules = async () => {
         const baileys = await import("@whiskeysockets/baileys");
         const boom = await import("@hapi/boom");
 
-        // algumas versões exportam default, outras não
         makeWASocket = baileys.default || baileys.makeWASocket;
         DisconnectReason = baileys.DisconnectReason;
         useMultiFileAuthState = baileys.useMultiFileAuthState;
@@ -96,7 +95,6 @@ class CloudSessionManager {
             if (!storageBucket) return false;
 
             console.log("⬇️ Baixando sessão do bucket...");
-            // apaga local e recria
             this.clearLocalSession();
             fs.mkdirSync(this.sessionPath, { recursive: true });
 
@@ -218,16 +216,13 @@ class BackendQueue {
             }
         } catch (err) {
             console.error("❌ Erro backend (fila):", err.message || err);
-            // se backend der erro, pausa envios por retryDelay e re-enfileira
             this.backendDownUntil = Date.now() + this.retryDelay;
-            // requeue com atraso (backoff simples)
             setTimeout(() => {
                 this.queue.push(task);
                 this.run();
             }, this.retryDelay);
         } finally {
             this.running--;
-            // tenta continuar com próximos
             setTimeout(() => this.run(), 200);
         }
     }
@@ -248,12 +243,16 @@ class BaileysWhatsAppBot {
         this.baileysLoaded = false;
         this.modulesLoaded = false;
 
-        // mapa de mensagens vistas { msgId => timestampMs }
+        // =================== CORREÇÃO 1: Mapa de mensagens vistas ===================
         this.seenMessages = new Map();
-        this.seenMessagesTTL = 1000 * 60 * 5; // 5 min
+        this.seenMessagesTTL = 1000 * 60 * 10; // 10 min (aumentado)
         setInterval(() => this.cleanupSeenMessages(), 60 * 1000);
 
-        this.MAX_MESSAGE_AGE = 30; // segundos
+        // =================== CORREÇÃO 2: Timestamp de conexão ===================
+        this.connectionTimestamp = null;
+        this.SYNC_BUFFER_TIME = 10000; // 10 segundos após conectar
+        
+        this.MAX_MESSAGE_AGE = 60; // aumentado para 60 segundos
         this.initialSyncDone = false;
 
         this.setupExpressServer();
@@ -277,6 +276,8 @@ class BaileysWhatsAppBot {
                 modules_loaded: this.modulesLoaded,
                 qr_attempts: this.qrAttempts,
                 uptime: process.uptime(),
+                initial_sync_done: this.initialSyncDone,
+                connection_timestamp: this.connectionTimestamp,
                 timestamp: new Date().toISOString(),
             });
         });
@@ -297,6 +298,9 @@ class BaileysWhatsAppBot {
                 this.sessionManager.clearLocalSession();
                 this.qrAttempts = 0;
                 this.isConnecting = false;
+                this.initialSyncDone = false;
+                this.connectionTimestamp = null;
+                this.seenMessages.clear();
                 qrCodeBase64 = null;
 
                 if (this.sock) {
@@ -354,7 +358,6 @@ class BaileysWhatsAppBot {
             this.sessionManager.startAutoBackup();
         }
 
-        // start after a short delay
         setTimeout(async () => {
             await this.initializeBailey();
         }, 1000);
@@ -375,17 +378,14 @@ class BaileysWhatsAppBot {
         console.log("🔗 Inicializando conexão com Baileys...");
 
         try {
-            // garante diretório de sessão local
             if (!fs.existsSync(this.sessionManager.sessionPath)) {
                 fs.mkdirSync(this.sessionManager.sessionPath, { recursive: true });
             }
 
-            // pega estado auth
             const { state, saveCreds } = await useMultiFileAuthState(this.sessionManager.sessionPath);
             this.authState = state;
             this.saveCreds = saveCreds;
 
-            // instancia socket
             this.sock = makeWASocket({
                 auth: this.authState,
                 printQRInTerminal: false,
@@ -399,7 +399,6 @@ class BaileysWhatsAppBot {
                 syncFullHistory: false,
             });
 
-            // cred update
             this.sock.ev.on("creds.update", this.saveCreds);
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -412,7 +411,7 @@ class BaileysWhatsAppBot {
                         qrcode.generate(qr, { small: true });
                         qrCodeBase64 = await QRCode.toDataURL(qr);
                         console.log("📲 QR Code pronto - escaneie via WhatsApp (ver /qr também)");
-                        // se muitas tentativas, limpa
+                        
                         if (this.qrAttempts > this.maxQRAttempts) {
                             console.log("❌ Muitas tentativas de QR - preciso resetar sessão local");
                             qrCodeBase64 = null;
@@ -427,14 +426,21 @@ class BaileysWhatsAppBot {
                         this.qrAttempts = 0;
                         qrCodeBase64 = null;
 
-                        // dá um tempinho pra sync estabilizar e evita tratar flood de histórico
+                        // =================== CORREÇÃO 3: Timestamp de conexão ===================
+                        this.connectionTimestamp = Date.now();
+                        console.log(`🕐 Connection timestamp: ${this.connectionTimestamp}`);
+
+                        // Aguarda buffer + tempo extra para histórico estabilizar
                         setTimeout(() => {
                             this.initialSyncDone = true;
-                            console.log("ℹ️ initialSyncDone = true");
-                        }, 2000);
+                            console.log("✅ initialSyncDone = true (pode processar mensagens novas)");
+                        }, this.SYNC_BUFFER_TIME);
 
-                        // envia upload da sessão
-                        try { await this.sessionManager.uploadSession(); } catch(e) { console.warn("⚠️ uploadSession falhou:", e.message || e); }
+                        try { 
+                            await this.sessionManager.uploadSession(); 
+                        } catch(e) { 
+                            console.warn("⚠️ uploadSession falhou:", e.message || e); 
+                        }
                     }
 
                     if (connection === "close") {
@@ -442,8 +448,9 @@ class BaileysWhatsAppBot {
                         this.isConnected = false;
                         this.isConnecting = false;
                         this.initialSyncDone = false;
+                        this.connectionTimestamp = null;
+                        this.seenMessages.clear();
 
-                        // decide reconectar
                         const shouldReconnect =
                             lastDisconnect?.error instanceof Boom
                                 ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
@@ -463,52 +470,80 @@ class BaileysWhatsAppBot {
                 }
             });
 
-            // listener de mensagens
+            // =================== CORREÇÃO 4: Listener de mensagens melhorado ===================
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msgs = m.messages || [];
                     const msg = msgs[0];
                     if (!msg) return;
 
-                    // ignorar mensagens que não são do tipo 'notify'
-                    if (m.type !== "notify") return;
+                    // =================== FILTRO 1: Apenas mensagens notify ===================
+                    if (m.type !== "notify") {
+                        console.log(`⏩ Ignorado tipo: ${m.type}`);
+                        return;
+                    }
 
-                    // ignora mensagens do próprio bot
-                    if (!msg.message || msg.key.fromMe) return;
+                    // =================== FILTRO 2: Mensagens próprias ===================
+                    if (!msg.message || msg.key.fromMe) {
+                        return;
+                    }
 
-                    // ignora status broadcast
-                    if (msg.key && msg.key.remoteJid === "status@broadcast") return;
+                    // =================== FILTRO 3: Status broadcast ===================
+                    if (msg.key && msg.key.remoteJid === "status@broadcast") {
+                        return;
+                    }
 
-                    // id
                     const msgId = msg.key && msg.key.id ? msg.key.id : null;
                     if (!msgId) return;
 
-                    // extrai timestamp confiável
+                    // =================== FILTRO 4: Duplicadas ===================
+                    if (this.seenMessages.has(msgId)) {
+                        console.log(`🔁 Ignorada duplicada: ${msgId}`);
+                        return;
+                    }
+
+                    // =================== FILTRO 5: Sync inicial não completo ===================
+                    if (!this.initialSyncDone) {
+                        console.log(`⏸️ Sync não completo - ignorando: ${msgId}`);
+                        return;
+                    }
+
+                    // =================== FILTRO 6: Timestamp válido ===================
                     let msgTimestamp = null;
-                    if (msg.messageTimestamp) msgTimestamp = Number(msg.messageTimestamp);
-                    else if (msg.key && msg.key.t) msgTimestamp = Number(msg.key.t);
-                    else if (msg.message?.timestamp) msgTimestamp = Number(msg.message.timestamp);
+                    if (msg.messageTimestamp) {
+                        msgTimestamp = Number(msg.messageTimestamp);
+                    } else if (msg.key && msg.key.t) {
+                        msgTimestamp = Number(msg.key.t);
+                    }
 
                     if (!msgTimestamp || isNaN(msgTimestamp) || msgTimestamp === 0) {
                         console.log(`⛔ Ignorada (sem timestamp válido): ${msgId}`);
                         return;
                     }
 
+                    // =================== FILTRO 7: Mensagens antigas ===================
                     const nowSecs = Math.floor(Date.now() / 1000);
                     const messageAge = nowSecs - msgTimestamp;
 
+                    // Se mensagem for mais velha que 60s, ignora
                     if (messageAge > this.MAX_MESSAGE_AGE) {
-                        console.log(`⏩ Ignorada mensagem antiga (${messageAge}s): ${msgId}`);
+                        console.log(`⏩ Ignorada mensagem antiga (${messageAge}s atrás): ${msgId}`);
                         return;
                     }
 
-                    if (this.seenMessages.has(msgId)) {
-                        console.log(`🔁 Ignorada duplicada: ${msgId}`);
+                    // =================== FILTRO 8: Mensagens antes da conexão ===================
+                    // Se mensagem foi enviada ANTES de conectarmos, ignora
+                    const msgTimestampMs = msgTimestamp * 1000;
+                    if (msgTimestampMs < this.connectionTimestamp) {
+                        const diff = Math.floor((this.connectionTimestamp - msgTimestampMs) / 1000);
+                        console.log(`⏩ Ignorada mensagem pré-conexão (${diff}s antes): ${msgId}`);
                         return;
                     }
+
+                    // Marca como vista SOMENTE após passar todos os filtros
                     this.seenMessages.set(msgId, Date.now());
 
-                    // extrai texto
+                    // =================== EXTRAÇÃO DE TEXTO ===================
                     const messageText =
                         (msg.message?.conversation && msg.message.conversation) ||
                         (msg.message?.extendedTextMessage?.text && msg.message.extendedTextMessage.text) ||
@@ -522,17 +557,30 @@ class BaileysWhatsAppBot {
                     }
 
                     const remoteJid = msg.key.remoteJid;
-                    console.log(`📩 Nova mensagem (${remoteJid}):`, messageText.substring(0, 200));
+                    const preview = messageText.length > 50 
+                        ? messageText.substring(0, 50) + "..." 
+                        : messageText;
+                    
+                    console.log(`📩 Nova mensagem válida (${remoteJid}): ${preview}`);
+                    console.log(`   ├─ ID: ${msgId}`);
+                    console.log(`   ├─ Idade: ${messageAge}s`);
+                    console.log(`   └─ Timestamp: ${new Date(msgTimestampMs).toISOString()}`);
 
-                    // tenta marcar como lida
-                    try { await this.sock.readMessages([msg.key]); } catch (e) { console.warn("⚠️ Falha ao marcar como lida:", e.message || e); }
+                    // Marca como lida
+                    try { 
+                        await this.sock.readMessages([msg.key]); 
+                    } catch (e) { 
+                        console.warn("⚠️ Falha ao marcar como lida:", e.message || e); 
+                    }
 
-                    // encaminha para backend via fila
+                    // Encaminha para backend
                     await this.forwardToBackend(remoteJid, messageText, msgId);
+                    
                 } catch (err) {
                     console.error("❌ Erro ao processar messages.upsert:", err);
                 }
             });
+            
         } catch (err) {
             console.error("❌ Erro Baileys inicialização:", err);
             this.isConnecting = false;
@@ -552,8 +600,6 @@ class BaileysWhatsAppBot {
             payload,
             replyFn: async (reply) => {
                 try {
-                    // reply é texto vindo do backend; tenta simular digitando e enviar
-                    // formato to: remoteJid já vem com @s.whatsapp.net quando necessário
                     await this.sendMessage(remoteJid, reply);
                 } catch (e) {
                     console.error("❌ Falha ao enviar reply do backend:", e.message || e);
@@ -568,7 +614,7 @@ class BaileysWhatsAppBot {
         }
 
         try {
-            // presence/typing simulation se disponível
+            // Presence/typing simulation
             try {
                 if (typeof this.sock.sendPresenceUpdate === "function") {
                     await this.sock.sendPresenceUpdate("composing", to);
@@ -577,10 +623,10 @@ class BaileysWhatsAppBot {
                 }
             } catch (presErr) {
                 console.warn("⚠️ Falha ao enviar presence:", presErr.message || presErr);
-                // segue sem presence
             }
 
             const result = await this.sock.sendMessage(to, { text: message });
+            console.log(`✅ Mensagem enviada para ${to}`);
             return result.key.id;
         } catch (error) {
             console.error("❌ Erro enviar mensagem:", error);
