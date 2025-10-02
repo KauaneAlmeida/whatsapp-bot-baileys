@@ -186,29 +186,10 @@ class BaileysWhatsAppBot {
         this.maxQRAttempts = 3;
         this.baileysLoaded = false;
         this.modulesLoaded = false;
-        
-        // 🔥 CACHE DE DEDUPLICAÇÃO DE MENSAGENS
-        this.processedMessages = new Map(); // Map<messageId, timestamp>
-        this.connectionTimestamp = null; // Timestamp da conexão atual
-        
-        this.setupExpressServer();
-        this.startMessageCleanup();
-    }
+        this.connectionTimestamp = null;
+        this.STALE_MESSAGE_THRESHOLD = 3 * 60;
 
-    // 🔥 LIMPA CACHE A CADA 10 MINUTOS
-    startMessageCleanup() {
-        setInterval(() => {
-            const now = Date.now();
-            const tenMinutesAgo = now - (10 * 60 * 1000);
-            
-            for (const [msgId, timestamp] of this.processedMessages.entries()) {
-                if (timestamp < tenMinutesAgo) {
-                    this.processedMessages.delete(msgId);
-                }
-            }
-            
-            console.log(`🧹 Cache limpo: ${this.processedMessages.size} mensagens ativas`);
-        }, 10 * 60 * 1000);
+        this.setupExpressServer();
     }
 
     setupExpressServer() {
@@ -221,7 +202,6 @@ class BaileysWhatsAppBot {
                 baileys_loaded: this.baileysLoaded,
                 modules_loaded: this.modulesLoaded,
                 qr_attempts: this.qrAttempts,
-                processed_messages: this.processedMessages.size,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString(),
             });
@@ -241,7 +221,6 @@ class BaileysWhatsAppBot {
     <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
     <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
     <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
-    <p>Mensagens no cache: ${this.processedMessages.size}</p>
     ${
         this.isConnected
             ? "<p>✅ Conectado com sucesso!</p>"
@@ -263,7 +242,6 @@ class BaileysWhatsAppBot {
                 this.qrAttempts = 0;
                 this.isConnecting = false;
                 qrCodeBase64 = null;
-                this.processedMessages.clear();
                 this.connectionTimestamp = null;
                 
                 if (this.sock) {
@@ -410,14 +388,10 @@ class BaileysWhatsAppBot {
                     this.isConnecting = false;
                     this.qrAttempts = 0;
                     qrCodeBase64 = null;
-                    
-                    // 🔥 MARCA TIMESTAMP DA CONEXÃO
+
                     this.connectionTimestamp = Math.floor(Date.now() / 1000);
                     console.log(`🕐 Conexão estabelecida em: ${new Date().toISOString()}`);
-                    
-                    // 🔥 LIMPA CACHE DE MENSAGENS ANTIGAS
-                    this.processedMessages.clear();
-                    
+
                     await this.sessionManager.uploadSession();
                 }
                 
@@ -448,59 +422,51 @@ class BaileysWhatsAppBot {
 
             this.sock.ev.on("creds.update", this.saveCreds);
 
-            // 🔥 LISTENER OTIMIZADO - SEM DUPLICAÇÃO E SEM MENSAGENS ANTIGAS
             this.sock.ev.on("messages.upsert", async (m) => {
                 try {
                     const msg = m.messages[0];
 
-                    // ✅ Ignora se não for mensagem válida
                     if (!msg || !msg.message || msg.key.fromMe || m.type !== "notify") {
                         return;
                     }
 
                     const messageId = msg.key.id;
-                    const messageTimestamp = msg.messageTimestamp || Math.floor(Date.now() / 1000);
-                    
-                    // 🔥 FILTRO 1: DEDUPLICAÇÃO - verifica se já processou
-                    if (this.processedMessages.has(messageId)) {
-                        console.log(`⏭️ [DUPLICADA] ${messageId.substring(0, 10)}...`);
-                        return;
-                    }
+                    const phoneNumber = msg.key.remoteJid.split("@")[0];
+                    const messageTimestamp = msg.messageTimestamp?.low || msg.messageTimestamp || Math.floor(Date.now() / 1000);
 
-                    // 🔥 FILTRO 2: IGNORA MENSAGENS ANTERIORES À CONEXÃO
-                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
-                        console.log(`⏮️ [ANTIGA] ${messageId.substring(0, 10)}... (${this.connectionTimestamp - messageTimestamp}s antes da conexão)`);
-                        return;
-                    }
-
-                    // 🔥 FILTRO 3: IGNORA MENSAGENS COM MAIS DE 30 SEGUNDOS
-                    const now = Math.floor(Date.now() / 1000);
-                    const messageAge = now - messageTimestamp;
-
-                    if (messageAge > 30) {
-                        console.log(`⏰ [EXPIRADA] ${messageId.substring(0, 10)}... (${messageAge}s atrás)`);
-                        return;
-                    }
-
-                    // 🔥 ADICIONA NO CACHE ANTES DE PROCESSAR
-                    this.processedMessages.set(messageId, Date.now());
-
-                    // ✅ PROCESSA MENSAGEM
                     const messageText =
                         msg.message?.conversation ||
                         msg.message?.extendedTextMessage?.text ||
                         null;
 
-                    if (messageText) {
-                        console.log(`📨 [NOVA] ${messageId.substring(0, 10)}... | ${messageText.substring(0, 40)}...`);
-                        await this.forwardToBackend(
-                            msg.key.remoteJid,
-                            messageText,
-                            messageId
-                        );
+                    if (!messageText) {
+                        return;
                     }
+
+                    const now = Math.floor(Date.now() / 1000);
+                    const messageAge = now - messageTimestamp;
+
+                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
+                        console.log(`⚠️ Ignored stale message (before connection) | ${messageId.substring(0, 10)}... | age=${this.connectionTimestamp - messageTimestamp}s | phone=${phoneNumber}`);
+                        return;
+                    }
+
+                    if (messageAge > this.STALE_MESSAGE_THRESHOLD) {
+                        console.log(`⚠️ Ignored stale message (too old) | ${messageId.substring(0, 10)}... | age=${messageAge}s | phone=${phoneNumber}`);
+                        return;
+                    }
+
+                    console.log(`📨 New message | ${messageId.substring(0, 10)}... | phone=${phoneNumber} | text="${messageText.substring(0, 40)}..."`);
+
+                    await this.forwardToBackend(
+                        msg.key.remoteJid,
+                        messageText,
+                        messageId,
+                        phoneNumber
+                    );
+
                 } catch (error) {
-                    console.error("❌ Erro ao processar mensagem:", error.message);
+                    console.error("❌ Error processing message:", error.message);
                 }
             });
         } catch (error) {
@@ -510,15 +476,16 @@ class BaileysWhatsAppBot {
         }
     }
 
-    async forwardToBackend(remoteJid, messageText, messageId) {
+    async forwardToBackend(remoteJid, messageText, messageId, phoneNumber) {
         try {
             const payload = {
-                phone_number: remoteJid.split("@")[0],
+                phone_number: phoneNumber,
                 message: messageText,
                 message_id: messageId,
             };
 
-            console.log("🔗 Enviando para backend:", payload.phone_number);
+            console.log(`🔗 Forwarding to backend | phone=${phoneNumber} | message_id=${messageId.substring(0, 10)}...`);
+
             const response = await axios.post(CONFIG.backendUrl, payload, {
                 timeout: 30000,
                 headers: {
@@ -527,15 +494,24 @@ class BaileysWhatsAppBot {
                 }
             });
 
-            if (response.data && response.data.response) {
-                const reply = response.data.response;
-                await this.sendMessage(remoteJid, reply);
-                console.log("✅ Resposta enviada");
+            if (response.data) {
+                const status = response.data.status;
+
+                if (status === 'ignored') {
+                    console.log(`⚠️ Backend ignored message: ${response.data.reason}`);
+                    return;
+                }
+
+                if (response.data.response) {
+                    const reply = response.data.response;
+                    await this.sendMessage(remoteJid, reply);
+                    console.log(`✅ Response sent to ${phoneNumber}`);
+                }
             }
         } catch (error) {
-            console.error("❌ Erro no backend:", error.message);
+            console.error(`❌ Backend error for ${phoneNumber}:`, error.message);
             if (error.code === 'ECONNREFUSED') {
-                console.error("🚫 Backend inacessível - verificar URL e conectividade");
+                console.error("🚫 Backend unreachable - check URL and connectivity");
             }
         }
     }
