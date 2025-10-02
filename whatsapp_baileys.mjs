@@ -19,13 +19,11 @@ const loadModules = async () => {
         Boom = boom.Boom;
         
         if (typeof makeWASocket !== 'function') {
-            console.log("Tentando baileys.makeWASocket...");
             makeWASocket = baileys.makeWASocket;
         }
         
         if (typeof makeWASocket !== 'function') {
-            console.error("ERRO: makeWASocket não encontrado. Baileys pode ter mudado a estrutura.");
-            console.log("Exports disponíveis:", Object.keys(baileys).filter(key => typeof baileys[key] === 'function').slice(0, 5));
+            console.error("ERRO: makeWASocket não encontrado");
             return false;
         }
         
@@ -103,8 +101,20 @@ class CloudSessionManager {
                 return false;
             }
 
+            // 🔥 CRÍTICO: Baixar apenas arquivos de autenticação, NÃO histórico
+            const authFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
+            
             for (const file of files) {
                 const fileName = file.name.replace(`${this.cloudPath}/`, "");
+                
+                // 🔥 PULAR arquivos de histórico de mensagens
+                if (fileName.includes('session-') || 
+                    fileName.includes('sender-key') || 
+                    fileName.includes('message-')) {
+                    console.log(`⏭️ Ignorando histórico: ${fileName}`);
+                    continue;
+                }
+                
                 const localPath = path.join(this.sessionPath, fileName);
                 await file.download({ destination: localPath });
                 console.log(`✔️ Sessão restaurada: ${fileName}`);
@@ -129,7 +139,15 @@ class CloudSessionManager {
             const files = fs.readdirSync(this.sessionPath);
             let uploaded = 0;
 
+            // 🔥 BACKUP: Apenas arquivos essenciais, não histórico
+            const essentialFiles = ['creds.json', 'app-state-sync-key', 'app-state-sync-version'];
+
             for (const fileName of files) {
+                // Ignorar histórico no backup também
+                if (!essentialFiles.some(f => fileName.includes(f))) {
+                    continue;
+                }
+                
                 const localPath = path.join(this.sessionPath, fileName);
                 const cloudPath = `${this.cloudPath}/${fileName}`;
                 await storageBucket.upload(localPath, { destination: cloudPath });
@@ -157,6 +175,30 @@ class CloudSessionManager {
         if (fs.existsSync(this.sessionPath)) {
             fs.rmSync(this.sessionPath, { recursive: true, force: true });
             console.log("🧹 Sessão local removida");
+        }
+    }
+    
+    // 🔥 NOVO: Limpar histórico local após conexão
+    clearMessageHistory() {
+        try {
+            if (!fs.existsSync(this.sessionPath)) return;
+            
+            const files = fs.readdirSync(this.sessionPath);
+            let cleaned = 0;
+            
+            for (const file of files) {
+                if (file.includes('session-') || 
+                    file.includes('sender-key') || 
+                    file.includes('message-')) {
+                    const filePath = path.join(this.sessionPath, file);
+                    fs.unlinkSync(filePath);
+                    cleaned++;
+                }
+            }
+            
+            console.log(`🧹 Histórico limpo: ${cleaned} arquivos removidos`);
+        } catch (error) {
+            console.error("Erro ao limpar histórico:", error.message);
         }
     }
 }
@@ -187,7 +229,9 @@ class BaileysWhatsAppBot {
         this.baileysLoaded = false;
         this.modulesLoaded = false;
         this.connectionTimestamp = null;
-        this.STALE_MESSAGE_THRESHOLD = 3 * 60;
+        this.STALE_MESSAGE_THRESHOLD = 3 * 60; // 3 minutos
+        this.processedMessages = new Set(); // 🔥 Cache local
+        this.MESSAGE_CACHE_LIMIT = 1000;
 
         this.setupExpressServer();
     }
@@ -204,6 +248,7 @@ class BaileysWhatsAppBot {
                 qr_attempts: this.qrAttempts,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString(),
+                processed_messages_cache: this.processedMessages.size
             });
         });
 
@@ -219,17 +264,16 @@ class BaileysWhatsAppBot {
     <h1>WhatsApp Bot</h1>
     <p>Status: ${this.isConnected ? 'Conectado' : this.isConnecting ? 'Conectando...' : 'Desconectado'}</p>
     <p>Baileys: ${this.baileysLoaded ? 'Carregado' : 'Não carregado'}</p>
-    <p>Módulos: ${this.modulesLoaded ? 'Carregados' : 'Não carregados'}</p>
-    <p>Tentativas QR: ${this.qrAttempts}/${this.maxQRAttempts}</p>
+    <p>Cache: ${this.processedMessages.size} msgs</p>
     ${
         this.isConnected
             ? "<p>✅ Conectado com sucesso!</p>"
             : qrCodeBase64
-            ? `<img src="${qrCodeBase64}" alt="QR Code" style="max-width:300px;"><br><p>Escaneie RAPIDAMENTE (expira em ~20s)</p>`
+            ? `<img src="${qrCodeBase64}" alt="QR Code" style="max-width:300px;"><br><p>Escaneie RAPIDAMENTE</p>`
             : "<p>⏳ Carregando QR...</p>"
     }
     <button onclick="location.reload()">Refresh</button>
-    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset Sessão</button>' : ''}
+    ${this.qrAttempts >= this.maxQRAttempts ? '<br><button onclick="fetch(\'/reset-session\', {method:\'POST\'}).then(()=>location.reload())">Reset</button>' : ''}
 </body>
 </html>`;
             res.send(htmlContent);
@@ -243,6 +287,7 @@ class BaileysWhatsAppBot {
                 this.isConnecting = false;
                 qrCodeBase64 = null;
                 this.connectionTimestamp = null;
+                this.processedMessages.clear(); // 🔥 Limpar cache
                 
                 if (this.sock) {
                     this.sock.end();
@@ -306,12 +351,11 @@ class BaileysWhatsAppBot {
     async initializeServices() {
         console.log("Inicializando serviços...");
         
-        console.log("📦 Carregando módulos...");
         this.modulesLoaded = await loadModules();
         this.baileysLoaded = this.modulesLoaded;
         
         if (!this.modulesLoaded) {
-            console.error("❌ Falha ao carregar módulos - abortando inicialização");
+            console.error("❌ Falha ao carregar módulos");
             return;
         }
 
@@ -329,12 +373,12 @@ class BaileysWhatsAppBot {
 
     async initializeBailey() {
         if (this.isConnecting) {
-            console.log("⚠️ Já está conectando, ignorando nova tentativa");
+            console.log("⚠️ Já está conectando");
             return;
         }
 
         if (!this.baileysLoaded) {
-            console.error("❌ Baileys não foi carregado - não é possível inicializar");
+            console.error("❌ Baileys não carregado");
             return;
         }
 
@@ -361,7 +405,7 @@ class BaileysWhatsAppBot {
                 maxMsgRetryCount: 5,
                 markOnlineOnConnect: true,
                 syncFullHistory: false, // 🔥 NÃO SINCRONIZA HISTÓRICO
-                getMessage: async () => undefined // 🔥 NÃO PROCESSA MENSAGENS ANTIGAS
+                getMessage: async () => undefined // 🔥 NÃO PROCESSA ANTIGAS
             });
 
             this.sock.ev.on("connection.update", async (update) => {
@@ -369,28 +413,31 @@ class BaileysWhatsAppBot {
                 
                 if (qr) {
                     this.qrAttempts++;
-                    console.log(`📱 QR Code ${this.qrAttempts}/${this.maxQRAttempts} gerado`);
+                    console.log(`📱 QR ${this.qrAttempts}/${this.maxQRAttempts}`);
                     
                     if (this.qrAttempts <= this.maxQRAttempts) {
                         qrcode.generate(qr, { small: true });
                         qrCodeBase64 = await QRCode.toDataURL(qr);
-                        console.log("📲 QR Code pronto - escaneie RAPIDAMENTE!");
                     } else {
-                        console.log("❌ Muitas tentativas de QR - resetar sessão necessário");
+                        console.log("❌ Muitas tentativas");
                         qrCodeBase64 = null;
                         this.sessionManager.clearLocalSession();
                     }
                 }
                 
                 if (connection === "open") {
-                    console.log("✅ WhatsApp conectado com sucesso!");
+                    console.log("✅ WhatsApp conectado!");
                     this.isConnected = true;
                     this.isConnecting = false;
                     this.qrAttempts = 0;
                     qrCodeBase64 = null;
 
+                    // 🔥 TIMESTAMP ANTES de processar qualquer mensagem
                     this.connectionTimestamp = Math.floor(Date.now() / 1000);
-                    console.log(`🕐 Conexão estabelecida em: ${new Date().toISOString()}`);
+                    console.log(`🕐 Connection timestamp: ${this.connectionTimestamp}`);
+
+                    // 🔥 LIMPAR histórico local
+                    this.sessionManager.clearMessageHistory();
 
                     await this.sessionManager.uploadSession();
                 }
@@ -405,15 +452,11 @@ class BaileysWhatsAppBot {
                         ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
                         : true;
 
-                    console.log("⚠️ Conexão fechada:", lastDisconnect?.error?.message);
+                    console.log("⚠️ Conexão fechada");
                     
                     if (shouldReconnect && this.qrAttempts < this.maxQRAttempts) {
-                        console.log("🔄 Tentando reconectar em 10s...");
-                        setTimeout(() => {
-                            this.initializeBailey();
-                        }, 10000);
+                        setTimeout(() => this.initializeBailey(), 10000);
                     } else {
-                        console.log("❌ Não reconectando - muitas tentativas ou deslogado");
                         this.sessionManager.clearLocalSession();
                         this.qrAttempts = 0;
                     }
@@ -426,6 +469,7 @@ class BaileysWhatsAppBot {
                 try {
                     const msg = m.messages[0];
 
+                    // 🔥 FILTROS IMEDIATOS (antes de qualquer processamento)
                     if (!msg || !msg.message || msg.key.fromMe || m.type !== "notify") {
                         return;
                     }
@@ -433,6 +477,27 @@ class BaileysWhatsAppBot {
                     const messageId = msg.key.id;
                     const phoneNumber = msg.key.remoteJid.split("@")[0];
                     const messageTimestamp = msg.messageTimestamp?.low || msg.messageTimestamp || Math.floor(Date.now() / 1000);
+
+                    // 🔥 VERIFICAÇÃO 1: Cache local (mais rápido)
+                    if (this.processedMessages.has(messageId)) {
+                        console.log(`⏭️ CACHE HIT | ${messageId.substring(0, 10)}...`);
+                        return;
+                    }
+
+                    // 🔥 VERIFICAÇÃO 2: Mensagem antes da conexão
+                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
+                        console.log(`⏭️ PRE-CONNECTION | ${messageId.substring(0, 10)}... | ${this.connectionTimestamp - messageTimestamp}s old`);
+                        return;
+                    }
+
+                    // 🔥 VERIFICAÇÃO 3: Mensagem muito antiga
+                    const now = Math.floor(Date.now() / 1000);
+                    const messageAge = now - messageTimestamp;
+                    
+                    if (messageAge > this.STALE_MESSAGE_THRESHOLD) {
+                        console.log(`⏭️ TOO OLD | ${messageId.substring(0, 10)}... | ${messageAge}s`);
+                        return;
+                    }
 
                     const messageText =
                         msg.message?.conversation ||
@@ -443,20 +508,16 @@ class BaileysWhatsAppBot {
                         return;
                     }
 
-                    const now = Math.floor(Date.now() / 1000);
-                    const messageAge = now - messageTimestamp;
-
-                    if (this.connectionTimestamp && messageTimestamp < this.connectionTimestamp) {
-                        console.log(`⚠️ Ignored stale message (before connection) | ${messageId.substring(0, 10)}... | age=${this.connectionTimestamp - messageTimestamp}s | phone=${phoneNumber}`);
-                        return;
+                    // 🔥 ADICIONAR ao cache ANTES de processar
+                    this.processedMessages.add(messageId);
+                    
+                    // Limpar cache se muito grande
+                    if (this.processedMessages.size > this.MESSAGE_CACHE_LIMIT) {
+                        const firstItems = Array.from(this.processedMessages).slice(0, 500);
+                        firstItems.forEach(id => this.processedMessages.delete(id));
                     }
 
-                    if (messageAge > this.STALE_MESSAGE_THRESHOLD) {
-                        console.log(`⚠️ Ignored stale message (too old) | ${messageId.substring(0, 10)}... | age=${messageAge}s | phone=${phoneNumber}`);
-                        return;
-                    }
-
-                    console.log(`📨 New message | ${messageId.substring(0, 10)}... | phone=${phoneNumber} | text="${messageText.substring(0, 40)}..."`);
+                    console.log(`✅ NEW MSG | ${messageId.substring(0, 10)}... | ${phoneNumber} | "${messageText.substring(0, 30)}..."`);
 
                     await this.forwardToBackend(
                         msg.key.remoteJid,
@@ -466,7 +527,7 @@ class BaileysWhatsAppBot {
                     );
 
                 } catch (error) {
-                    console.error("❌ Error processing message:", error.message);
+                    console.error("❌ Error processing:", error.message);
                 }
             });
         } catch (error) {
@@ -482,9 +543,10 @@ class BaileysWhatsAppBot {
                 phone_number: phoneNumber,
                 message: messageText,
                 message_id: messageId,
+                timestamp: Math.floor(Date.now() / 1000) // 🔥 Adicionar timestamp
             };
 
-            console.log(`🔗 Forwarding to backend | phone=${phoneNumber} | message_id=${messageId.substring(0, 10)}...`);
+            console.log(`🔗 → Backend | ${messageId.substring(0, 10)}...`);
 
             const response = await axios.post(CONFIG.backendUrl, payload, {
                 timeout: 30000,
@@ -498,21 +560,17 @@ class BaileysWhatsAppBot {
                 const status = response.data.status;
 
                 if (status === 'ignored') {
-                    console.log(`⚠️ Backend ignored message: ${response.data.reason}`);
+                    console.log(`⏭️ Backend ignored: ${response.data.reason}`);
                     return;
                 }
 
                 if (response.data.response) {
-                    const reply = response.data.response;
-                    await this.sendMessage(remoteJid, reply);
-                    console.log(`✅ Response sent to ${phoneNumber}`);
+                    await this.sendMessage(remoteJid, response.data.response);
+                    console.log(`✅ Response sent`);
                 }
             }
         } catch (error) {
-            console.error(`❌ Backend error for ${phoneNumber}:`, error.message);
-            if (error.code === 'ECONNREFUSED') {
-                console.error("🚫 Backend unreachable - check URL and connectivity");
-            }
+            console.error(`❌ Backend error:`, error.message);
         }
     }
 
