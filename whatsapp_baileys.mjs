@@ -186,6 +186,7 @@ class BackendQueue {
         this.concurrency = concurrency;
         this.retryDelay = retryDelay;
         this.backendDownUntil = 0;
+        this.processing = new Set(); // IDs sendo processados agora
     }
 
     async push(task) {
@@ -200,6 +201,15 @@ class BackendQueue {
         if (Date.now() < this.backendDownUntil) return;
 
         const task = this.queue.shift();
+        
+        // ========== DEDUPE: Verifica se já está processando ==========
+        const taskId = `${task.payload.phone_number}:${task.payload.message_id}`;
+        if (this.processing.has(taskId)) {
+            console.log(`⚠️ Já processando ${taskId}, ignorando duplicata`);
+            return;
+        }
+        
+        this.processing.add(taskId);
         this.running++;
 
         try {
@@ -222,6 +232,7 @@ class BackendQueue {
                 this.run();
             }, this.retryDelay);
         } finally {
+            this.processing.delete(taskId);
             this.running--;
             setTimeout(() => this.run(), 200);
         }
@@ -525,10 +536,13 @@ class BaileysWhatsAppBot {
             const msgId = msg.key.id;
             if (!msgId) return;
 
-            // Filtro 5: Duplicada
+            // ========== FILTRO 5: Duplicada (MARCA IMEDIATAMENTE) ==========
             if (this.seenMessages.has(msgId)) {
+                console.log(`🔁 DUPLICADA bloqueada: ${msgId}`);
                 return;
             }
+            // MARCA AGORA para bloquear qualquer reprocessamento
+            this.seenMessages.add(msgId);
 
             // Filtro 6: Extrai timestamp
             let msgTimestamp = null;
@@ -549,12 +563,9 @@ class BaileysWhatsAppBot {
             if (msgTimestampMs <= this.processMessagesAfter) {
                 const diffSeconds = Math.floor((this.processMessagesAfter - msgTimestampMs) / 1000);
                 console.log(`⏩ IGNORADA (${diffSeconds}s antes do corte): ${msgId}`);
-                this.seenMessages.add(msgId); // marca como vista para não reprocessar
+                // NÃO remove do Set - já marcamos como vista acima
                 return;
             }
-
-            // Agora sim, marca como vista
-            this.seenMessages.add(msgId);
 
             // Extrai texto
             const messageText =
@@ -598,6 +609,17 @@ class BaileysWhatsAppBot {
             message: messageText,
             message_id: messageId,
         };
+
+        // ========== DEDUPE: Verifica se já está na fila ==========
+        const isDuplicate = this.queue.some(task => 
+            task.payload.message_id === messageId && 
+            task.payload.phone_number === payload.phone_number
+        );
+        
+        if (isDuplicate) {
+            console.log(`⚠️ Mensagem ${messageId} já está na fila, ignorando duplicata`);
+            return;
+        }
 
         backendQueue.push({
             url: CONFIG.backendUrl,
